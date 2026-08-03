@@ -43,5 +43,13 @@ configuration: it is absent from `project.conf`, canonical digests,
 `weights.txt`, and `checkpoint.txt`. Resuming with a different thread count
 must produce the same logical work and reduction order.
 
-Concurrency tests use C11 threads. `make test-thread-sanitize` builds and runs
-the shared-model test with ThreadSanitizer when the host runtime supports it.
+Concurrency tests use POSIX threads, matching the supported Linux targets.
+`make test-thread-sanitize` builds and runs the shared-model test with
+ThreadSanitizer when the host runtime supports it.
+
+On WSL2, the GCC ThreadSanitizer shadow-memory layout conflicts with the
+kernel's high-entropy ASLR. The Makefile detects the Microsoft kernel and runs
+only the instrumented child through `setarch <machine> -R`; system-wide ASLR
+settings remain unchanged. POSIX threads are used directly because the GNU
+ThreadSanitizer runtime crashes inside glibc's C11 `thrd_create` wrapper on the
+validated WSL environment, while the equivalent `pthread_create` path passes.

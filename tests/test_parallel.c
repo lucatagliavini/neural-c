@@ -1,6 +1,6 @@
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
-#include <threads.h>
 
 #include "neural/defaults.h"
 #include "neural/gradient.h"
@@ -29,7 +29,7 @@ static void check(int condition, const char *description)
     }
 }
 
-static int worker_run(void *opaque)
+static void *worker_run(void *opaque)
 {
     WorkerArguments *arguments = opaque;
     const neural_real inputs[] = {1.0, -1.0};
@@ -56,12 +56,12 @@ static int worker_run(void *opaque)
                                   outputs,
                                   2U,
                                   &error)) {
-            return -1;
+            return NULL;
         }
         if (iteration == 0U) {
             memcpy(expected_outputs, outputs, sizeof(outputs));
         } else if (memcmp(expected_outputs, outputs, sizeof(outputs)) != 0) {
-            return -1;
+            return NULL;
         }
     }
     weight_gradients = neural_gradient_layer_weights(gradient,
@@ -71,7 +71,7 @@ static int worker_run(void *opaque)
                                                   0U,
                                                   &bias_count);
     if (weight_gradients == NULL || bias_gradients == NULL) {
-        return -1;
+        return NULL;
     }
     for (iteration = 0U; iteration < weight_count; iteration++) {
         weight_gradients[iteration] =
@@ -82,7 +82,7 @@ static int worker_run(void *opaque)
             (neural_real)(arguments->sample_index + 1U);
     }
     arguments->success = 1;
-    return 0;
+    return NULL;
 }
 
 static void test_execution_plan(void)
@@ -143,7 +143,7 @@ static void test_parallel_forward_and_reduction(void)
     NeuralGradient *sample_gradients[TEST_THREAD_COUNT] = {0};
     NeuralGradient *reduced = NULL;
     WorkerArguments arguments[TEST_THREAD_COUNT];
-    thrd_t threads[TEST_THREAD_COUNT];
+    pthread_t threads[TEST_THREAD_COUNT];
     int started[TEST_THREAD_COUNT] = {0};
     NeuralError error;
     size_t index;
@@ -181,23 +181,22 @@ static void test_parallel_forward_and_reduction(void)
         arguments[index].context = contexts[index];
         arguments[index].sample_index = index;
         arguments[index].success = 0;
-        started[index] =
-            thrd_create(&threads[index], worker_run, &arguments[index]) ==
-            thrd_success;
+        started[index] = pthread_create(&threads[index],
+                                        NULL,
+                                        worker_run,
+                                        &arguments[index]) == 0;
         check(started[index], "worker thread must start");
         if (!started[index]) {
             workers_ready = 0;
         }
     }
     for (index = 0U; index < TEST_THREAD_COUNT; index++) {
-        int result = -1;
-
         if (started[index]) {
-            int joined = thrd_join(threads[index], &result) == thrd_success;
+            int joined = pthread_join(threads[index], NULL) == 0;
 
-            check(joined && result == 0 && arguments[index].success,
+            check(joined && arguments[index].success,
                   "worker thread must finish without shared-state races");
-            if (!joined || result != 0 || !arguments[index].success) {
+            if (!joined || !arguments[index].success) {
                 workers_ready = 0;
             }
         }

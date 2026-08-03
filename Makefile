@@ -1,6 +1,14 @@
 NATIVE_CC ?= cc
 PPC64LE_CC ?= powerpc64le-linux-gnu-gcc
 THREAD_FLAGS ?= -pthread
+UNAME_MACHINE := $(shell uname -m)
+UNAME_RELEASE := $(shell uname -r)
+
+ifneq ($(findstring microsoft,$(UNAME_RELEASE)),)
+TSAN_RUNNER ?= setarch $(UNAME_MACHINE) -R
+else
+TSAN_RUNNER ?=
+endif
 
 CPPFLAGS += -Iinclude
 CFLAGS += -std=c11 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow $(THREAD_FLAGS)
@@ -101,7 +109,7 @@ test-thread-sanitize:
 	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) -O1 -g \
 		-fsanitize=thread -fno-omit-frame-pointer \
 		$(PARALLEL_TEST_SOURCES) -o build/tests/test_parallel_tsan $(LDLIBS)
-	TSAN_OPTIONS=halt_on_error=1 ./build/tests/test_parallel_tsan
+	TSAN_OPTIONS=halt_on_error=1 $(TSAN_RUNNER) ./build/tests/test_parallel_tsan
 
 check: test test-defaults build-native
 	bash -n neural-c.sh
