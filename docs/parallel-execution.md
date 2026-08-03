@@ -21,16 +21,17 @@ update boundary.
 
 The logical task plan contains exactly one task per sample, always in original
 sample order. `thread_count` changes only how many workers execute those tasks;
-it never changes task boundaries. Each completed task produces a private
-sample gradient by copying its worker scratch gradient into the corresponding
-task slot. After all workers join, `neural_gradient_reduce_ordered` adds those
-gradients by increasing sample index. The batch mean is formed by scaling that
-sum by `1 / sample_count` before one coordinated model update.
+it never changes task boundaries. Each completed task leaves its sample
+gradient in its worker context. After each bounded execution wave, the main
+thread feeds those gradients to `NeuralBatchAccumulator` by increasing global
+sample index, then reuses the worker buffers. Finalization forms the batch mean
+using its actual sample count before one coordinated model update.
 
 This correctness-first design makes floating-point grouping independent of
-thread scheduling and thread count. It requires one gradient result per active
-batch sample; a future bounded-memory optimization must preserve the same
-logical reduction order or explicitly version the reproducibility contract.
+thread scheduling and thread count. It requires one gradient per worker plus
+one accumulator gradient, keeping storage proportional to
+`thread_count * parameter_count`. Milestone 4.4 implements the persistent
+worker pool that drives these waves.
 Workers must not update weights directly, use atomic floating-point additions,
 or implement asynchronous “Hogwild” training.
 

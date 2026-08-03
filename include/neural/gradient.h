@@ -17,6 +17,9 @@ int neural_gradient_zero(NeuralGradient *gradient, NeuralError *error);
 int neural_gradient_copy(NeuralGradient *destination,
                          const NeuralGradient *source,
                          NeuralError *error);
+int neural_gradient_add(NeuralGradient *destination,
+                        const NeuralGradient *source,
+                        NeuralError *error);
 int neural_gradient_is_compatible(const NeuralGradient *gradient,
                                   const NeuralModel *model);
 

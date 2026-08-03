@@ -17,9 +17,10 @@
     workspace scratch buffers.
   - **4.2 — complete:** central finite-difference gradient checks with exact
     parameter restoration and activation coverage.
-  - **4.3 — next:** generic deterministic batch planning and accumulation;
-    public behavior remains full-batch.
-  - **4.4:** persistent pthread workers and bounded-memory execution waves.
+  - **4.3 — complete:** generic deterministic batch planning and ordered,
+    transactional accumulation; public behavior remains full-batch.
+  - **4.4 — next:** persistent pthread workers and bounded-memory execution
+    waves.
   - **4.5:** coherent epoch loss reporting, fresh `train`, and atomic final
     weights.
 - **Milestone 5:** periodic checkpoints, signals, `--resume`, refinement, and

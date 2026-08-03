@@ -256,13 +256,14 @@ int neural_gradient_is_compatible(const NeuralGradient *gradient,
     return gradient != NULL && model != NULL && gradient->model == model;
 }
 
-static int add_gradient(NeuralGradient *destination,
+int neural_gradient_add(NeuralGradient *destination,
                         const NeuralGradient *source,
                         NeuralError *error)
 {
     size_t layer_index;
 
-    if (source == NULL || destination->model != source->model ||
+    if (destination == NULL || source == NULL ||
+        destination->model != source->model ||
         destination->layer_count != source->layer_count) {
         neural_error_set(error, "gradient belongs to a different model");
         return 0;
@@ -273,16 +274,45 @@ static int add_gradient(NeuralGradient *destination,
         NeuralGradientLayer *destination_layer =
             &destination->layers[layer_index];
         const NeuralGradientLayer *source_layer = &source->layers[layer_index];
+        size_t index;
 
-        if (!neural_tensor_add(destination_layer->weights,
-                               source_layer->weights,
-                               destination_layer->weight_count,
-                               error) ||
-            !neural_tensor_add(destination_layer->biases,
-                               source_layer->biases,
-                               destination_layer->bias_count,
-                               error)) {
+        if (destination_layer->weight_count != source_layer->weight_count ||
+            destination_layer->bias_count != source_layer->bias_count) {
+            neural_error_set(error, "gradient dimensions do not match");
             return 0;
+        }
+        for (index = 0U; index < destination_layer->weight_count; index++) {
+            if (!isfinite(destination_layer->weights[index]) ||
+                !isfinite(source_layer->weights[index]) ||
+                !isfinite(destination_layer->weights[index] +
+                          source_layer->weights[index])) {
+                neural_error_set(error, "summed weight gradient is not finite");
+                return 0;
+            }
+        }
+        for (index = 0U; index < destination_layer->bias_count; index++) {
+            if (!isfinite(destination_layer->biases[index]) ||
+                !isfinite(source_layer->biases[index]) ||
+                !isfinite(destination_layer->biases[index] +
+                          source_layer->biases[index])) {
+                neural_error_set(error, "summed bias gradient is not finite");
+                return 0;
+            }
+        }
+    }
+    for (layer_index = 0U;
+         layer_index < destination->layer_count;
+         layer_index++) {
+        NeuralGradientLayer *destination_layer =
+            &destination->layers[layer_index];
+        const NeuralGradientLayer *source_layer = &source->layers[layer_index];
+        size_t index;
+
+        for (index = 0U; index < destination_layer->weight_count; index++) {
+            destination_layer->weights[index] += source_layer->weights[index];
+        }
+        for (index = 0U; index < destination_layer->bias_count; index++) {
+            destination_layer->biases[index] += source_layer->biases[index];
         }
     }
     return 1;
@@ -308,9 +338,9 @@ int neural_gradient_reduce_ordered(
     }
     for (sample_index = 0U; sample_index < sample_count; sample_index++) {
         if (sample_gradients[sample_index] == destination ||
-            !add_gradient(accumulator,
-                          sample_gradients[sample_index],
-                          error)) {
+            !neural_gradient_add(accumulator,
+                                 sample_gradients[sample_index],
+                                 error)) {
             if (sample_gradients[sample_index] == destination) {
                 neural_error_set(error,
                                  "reduction destination cannot be an input");

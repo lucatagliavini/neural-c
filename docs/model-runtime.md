@@ -69,8 +69,10 @@ generic `math.c`:
 - `activation.c` implements activation forward and Jacobian-vector products.
 - `loss.c` implements MSE and its derivative.
 - `tensor_ops.c` implements checked zero, ordered addition, and scaling.
-- `gradient.c` owns model-shaped gradient storage, ordered reduction, and the
-  single transactional parameter update.
+- `gradient.c` owns model-shaped gradient storage, transactional addition,
+  ordered reduction, and the single transactional parameter update.
+- `batch.c` owns contiguous batch planning and deterministic batch-gradient
+  accumulation; it does not execute samples or update model parameters.
 
 MSE is the mean of squared output differences; its derivative is normalized by
 the output count. Dense backward produces gradients for inputs, weights, and

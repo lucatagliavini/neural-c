@@ -37,6 +37,14 @@ order and are not shuffled. Each batch gradient is the ordered sum of its
 sample gradients divided by the actual number of samples in that batch. The
 main thread performs exactly one exclusive model update per batch.
 
+`NeuralBatchPlan` validates the resolved batch size and maps each batch to a
+contiguous half-open sample range. `NeuralBatchAccumulator` accepts gradients
+only in increasing global sample-index order. It owns one model-shaped
+gradient, can be reset between batches, and exposes that gradient only after
+finalization has divided it by the accumulated sample count. Failed or
+out-of-order additions do not advance its state; gradient addition validates
+every sum before changing any destination value.
+
 Batch size is not yet public configuration. When exposed, it must be owned by
 training configuration and its canonical digest because it changes parameter
 updates. It must never be treated like execution-only `thread_count`.

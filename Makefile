@@ -14,7 +14,7 @@ CPPFLAGS += -Iinclude
 CFLAGS += -std=c11 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow $(THREAD_FLAGS)
 LDLIBS += -lm
 
-LIBRARY_SOURCES := src/activation.c src/atomic_file.c src/backprop.c src/cli_options.c src/dense.c src/digest.c src/error.c src/gradient.c src/gradient_check.c src/init.c src/loss.c src/model.c src/parallel.c src/parse.c src/path.c src/persistence.c src/project.c src/random.c src/sha256.c src/tensor_ops.c src/training.c src/version.c
+LIBRARY_SOURCES := src/activation.c src/atomic_file.c src/backprop.c src/batch.c src/cli_options.c src/dense.c src/digest.c src/error.c src/gradient.c src/gradient_check.c src/init.c src/loss.c src/model.c src/parallel.c src/parse.c src/path.c src/persistence.c src/project.c src/random.c src/sha256.c src/tensor_ops.c src/training.c src/version.c
 PROGRAM_SOURCES := src/main.c $(LIBRARY_SOURCES)
 PUBLIC_HEADERS := $(wildcard include/neural/*.h)
 INTERNAL_HEADERS := $(wildcard src/*.h)
@@ -25,6 +25,7 @@ MATH_TEST_SOURCES := tests/test_math.c $(LIBRARY_SOURCES)
 PARALLEL_TEST_SOURCES := tests/test_parallel.c $(LIBRARY_SOURCES)
 BACKPROP_TEST_SOURCES := tests/test_backprop.c $(LIBRARY_SOURCES)
 GRADIENT_CHECK_TEST_SOURCES := tests/test_gradient_check.c $(LIBRARY_SOURCES)
+BATCH_TEST_SOURCES := tests/test_batch.c $(LIBRARY_SOURCES)
 
 .PHONY: all build build-native build-ppc64le test test-defaults test-sanitize test-thread-sanitize check verify-binaries clean
 
@@ -72,7 +73,11 @@ build/tests/test_gradient_check: $(GRADIENT_CHECK_TEST_SOURCES) $(PUBLIC_HEADERS
 	mkdir -p $(@D)
 	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) $(GRADIENT_CHECK_TEST_SOURCES) -o $@ $(LDLIBS)
 
-test: build/tests/test_core build/tests/test_model build/tests/test_persistence build/tests/test_math build/tests/test_parallel build/tests/test_backprop build/tests/test_gradient_check
+build/tests/test_batch: $(BATCH_TEST_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
+	mkdir -p $(@D)
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) $(BATCH_TEST_SOURCES) -o $@ $(LDLIBS)
+
+test: build/tests/test_core build/tests/test_model build/tests/test_persistence build/tests/test_math build/tests/test_parallel build/tests/test_backprop build/tests/test_gradient_check build/tests/test_batch
 	./build/tests/test_core
 	./build/tests/test_model
 	./build/tests/test_persistence
@@ -80,6 +85,7 @@ test: build/tests/test_core build/tests/test_model build/tests/test_persistence 
 	./build/tests/test_parallel
 	./build/tests/test_backprop
 	./build/tests/test_gradient_check
+	./build/tests/test_batch
 
 test-defaults:
 	mkdir -p build/tests
@@ -127,6 +133,10 @@ test-sanitize:
 		-fsanitize=address,undefined -fno-omit-frame-pointer \
 		$(GRADIENT_CHECK_TEST_SOURCES) -o build/tests/test_gradient_check_sanitize $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_gradient_check_sanitize
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) -O1 -g \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		$(BATCH_TEST_SOURCES) -o build/tests/test_batch_sanitize $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_batch_sanitize
 
 test-thread-sanitize:
 	mkdir -p build/tests
