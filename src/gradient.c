@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "neural/tensor_ops.h"
+#include "compensated_sum.h"
 #include "gradient_internal.h"
 
 typedef struct {
@@ -319,38 +320,6 @@ int neural_gradient_add(NeuralGradient *destination,
     return 1;
 }
 
-static int compensated_value(neural_real sum,
-                             neural_real compensation,
-                             neural_real addend,
-                             neural_real *new_sum,
-                             neural_real *new_compensation)
-{
-    neural_real total;
-    neural_real correction;
-    neural_real corrected;
-
-    if (!isfinite(sum) || !isfinite(compensation) || !isfinite(addend)) {
-        return 0;
-    }
-    total = sum + addend;
-    if (!isfinite(total)) {
-        return 0;
-    }
-    if (fabs(sum) >= fabs(addend)) {
-        correction = (sum - total) + addend;
-    } else {
-        correction = (addend - total) + sum;
-    }
-    corrected = compensation + correction;
-    if (!isfinite(correction) || !isfinite(corrected) ||
-        !isfinite(total + corrected)) {
-        return 0;
-    }
-    *new_sum = total;
-    *new_compensation = corrected;
-    return 1;
-}
-
 static int compensated_gradients_are_compatible(
     const NeuralGradient *sum,
     const NeuralGradient *compensation,
@@ -401,22 +370,22 @@ int neural_gradient_accumulate_compensated(
             return 0;
         }
         for (index = 0U; index < sum_layer->weight_count; index++) {
-            if (!compensated_value(sum_layer->weights[index],
-                                   compensation_layer->weights[index],
-                                   addend_layer->weights[index],
-                                   &ignored_sum,
-                                   &ignored_compensation)) {
+            if (!neural_compensated_add(sum_layer->weights[index],
+                                        compensation_layer->weights[index],
+                                        addend_layer->weights[index],
+                                        &ignored_sum,
+                                        &ignored_compensation)) {
                 neural_error_set(error,
                                  "compensated weight sum is not finite");
                 return 0;
             }
         }
         for (index = 0U; index < sum_layer->bias_count; index++) {
-            if (!compensated_value(sum_layer->biases[index],
-                                   compensation_layer->biases[index],
-                                   addend_layer->biases[index],
-                                   &ignored_sum,
-                                   &ignored_compensation)) {
+            if (!neural_compensated_add(sum_layer->biases[index],
+                                        compensation_layer->biases[index],
+                                        addend_layer->biases[index],
+                                        &ignored_sum,
+                                        &ignored_compensation)) {
                 neural_error_set(error,
                                  "compensated bias sum is not finite");
                 return 0;
@@ -431,18 +400,20 @@ int neural_gradient_accumulate_compensated(
         size_t index;
 
         for (index = 0U; index < sum_layer->weight_count; index++) {
-            (void)compensated_value(sum_layer->weights[index],
-                                    compensation_layer->weights[index],
-                                    addend_layer->weights[index],
-                                    &sum_layer->weights[index],
-                                    &compensation_layer->weights[index]);
+            (void)neural_compensated_add(
+                sum_layer->weights[index],
+                compensation_layer->weights[index],
+                addend_layer->weights[index],
+                &sum_layer->weights[index],
+                &compensation_layer->weights[index]);
         }
         for (index = 0U; index < sum_layer->bias_count; index++) {
-            (void)compensated_value(sum_layer->biases[index],
-                                    compensation_layer->biases[index],
-                                    addend_layer->biases[index],
-                                    &sum_layer->biases[index],
-                                    &compensation_layer->biases[index]);
+            (void)neural_compensated_add(
+                sum_layer->biases[index],
+                compensation_layer->biases[index],
+                addend_layer->biases[index],
+                &sum_layer->biases[index],
+                &compensation_layer->biases[index]);
         }
     }
     return 1;

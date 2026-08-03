@@ -17,7 +17,7 @@ Weights, checkpoints, and canonical digests are defined in
 [`docs/persistence-format.md`](docs/persistence-format.md).
 Thread ownership and deterministic reduction are defined in
 [`docs/parallel-execution.md`](docs/parallel-execution.md).
-Backpropagation, batch semantics, and the planned worker pool are defined in
+Backpropagation, batch semantics, and the persistent worker pool are defined in
 [`docs/training-engine.md`](docs/training-engine.md).
 
 ## Project format
@@ -76,6 +76,17 @@ weights, and preserves unrelated files.
 
 ## Resume and refinement
 
+Fresh training validates the project, initializes the model from its configured
+seed, and writes `weights.txt` atomically only after all epochs complete:
+
+```sh
+./neural-c.sh train projects/example --threads 4
+```
+
+Fresh training refuses to start if `weights.txt` or `checkpoint.txt` already
+exists. Full-batch updates and epoch loss reporting are deterministic across
+worker counts.
+
 The CLI reserves two validated, mutually exclusive training modes:
 
 ```sh
@@ -83,7 +94,7 @@ The CLI reserves two validated, mutually exclusive training modes:
 ./neural-c.sh train projects/example --additional-epochs 2000
 ```
 
-Their execution will be implemented with the training engine. Resume will use
+Their execution will be implemented in Milestone 5. Resume will use
 the singular `checkpoint.txt`; refinement will start from final `weights.txt`.
 The generated `checkpoint_interval` setting controls future periodic saves.
 Versioned parsers, exact `double` round trips, SHA-256 compatibility checks,
@@ -91,9 +102,8 @@ and atomic replacement are already implemented for both persistence files.
 
 `train` and `predict` accept execution-only `-j N` or `--threads N`. The value
 defaults to 1 and is intentionally excluded from project files, digests, and
-checkpoints. Parallel forward execution already supports a shared read-only
-model with one private worker context per thread; full parallel training will
-be composed in the next milestone.
+checkpoints. Training uses a persistent pool with one private worker context
+per thread and deterministic, bounded-memory gradient accumulation.
 
 Run the architecture-appropriate executable through the launcher:
 
@@ -103,7 +113,7 @@ Run the architecture-appropriate executable through the launcher:
 ```
 
 `inspect` loads and validates the complete project and prints its canonical
-model, dataset, and training SHA-256 digests. `train` and `predict` are present
-in the CLI but will be implemented in later milestones. The reusable option
-parser supports `--option value`, `--option=value`, short options, and `--`
-before positional values that begin with `-`.
+model, dataset, and training SHA-256 digests. Fresh `train` is implemented;
+`predict`, resume, and refinement remain planned. The reusable option parser
+supports `--option value`, `--option=value`, short options, and `--` before
+positional values that begin with `-`.

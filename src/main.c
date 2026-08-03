@@ -14,9 +14,11 @@
 #include "neural/project.h"
 #include "neural/training.h"
 #include "neural/version.h"
+#include "train_project.h"
 
 enum exit_code {
     EXIT_OK = 0,
+    EXIT_RUNTIME = 1,
     EXIT_USAGE = 2,
     EXIT_NOT_IMPLEMENTED = 3
 };
@@ -330,6 +332,7 @@ static int command_train(const char *directory,
 {
     NeuralTrainingRequest request = {NEURAL_TRAIN_FRESH, 0U};
     NeuralExecutionConfig execution = {NEURAL_DEFAULT_THREAD_COUNT};
+    NeuralTrainingResult result;
     NeuralError error;
 
     if (neural_option_is_present(options, OPTION_RESUME) &&
@@ -365,6 +368,21 @@ static int command_train(const char *directory,
     if (!neural_execution_config_validate(&execution, &error)) {
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
         return EXIT_USAGE;
+    }
+    if (request.mode == NEURAL_TRAIN_FRESH) {
+        if (!neural_project_train_fresh(directory,
+                                        &execution,
+                                        &result,
+                                        &error)) {
+            fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+            return EXIT_RUNTIME;
+        }
+        printf("Training complete: %zu epochs, loss %.*g, workers %zu\n",
+               result.completed_epochs,
+               DBL_DECIMAL_DIG,
+               result.final_loss,
+               result.worker_count);
+        return EXIT_OK;
     }
     fprintf(stderr,
             "%s: training mode '%s' is not implemented yet "

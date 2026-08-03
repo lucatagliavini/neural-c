@@ -79,8 +79,14 @@ accumulator and may safely reuse the pool.
 ## Loss and Completion
 
 Epoch reporting evaluates the complete dataset after all updates in that epoch,
-so one reported value always describes one coherent model state. Milestone 4
-runs exactly the configured number of epochs without early stopping. A fresh
-successful run atomically replaces `weights.txt`; failures leave prior final
-weights untouched. Checkpoints, signals, resume, and refinement are Milestone
-5 responsibilities.
+using a trainer-owned reusable workspace and output buffer. One reported value
+therefore always describes one coherent model state. An optional observer is
+called once per completed epoch and cannot request early success; rejecting a
+report fails the run.
+
+Fresh training runs exactly the configured number of epochs, with one full
+batch and one model update per epoch. It is allowed only when neither
+`weights.txt` nor `checkpoint.txt` exists. The final model and canonical
+project digests are written atomically to `weights.txt` only after every epoch
+and report succeeds. Training failures create no final weights. Checkpoints,
+signals, resume, and refinement are Milestone 5 responsibilities.

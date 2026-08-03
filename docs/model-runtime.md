@@ -69,6 +69,7 @@ generic `math.c`:
 - `activation.c` implements activation forward and Jacobian-vector products.
 - `loss.c` implements MSE and its derivative.
 - `tensor_ops.c` implements checked zero, ordered addition, and scaling.
+- `compensated_sum.c` implements the shared finite Neumaier scalar step.
 - `gradient.c` owns model-shaped gradient storage, transactional addition,
   Neumaier-compensated ordered reduction, and the single transactional
   parameter update.
