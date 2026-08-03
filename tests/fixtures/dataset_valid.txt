@@ -1,0 +1,4 @@
+neural-c dataset 1
+# Decimal and scientific notation are accepted.
+1 2 3 -> 0 1
+4 -2.5 6e-1 -> 1e0 1

@@ -1,0 +1,6 @@
+neural-c model 1
+# Arbitrary depth and activation choices.
+input 3
+dense 5 leaky_relu alpha=0.01
+dense 4 tanh
+dense 2 sigmoid

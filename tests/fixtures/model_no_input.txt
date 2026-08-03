@@ -1,0 +1,2 @@
+neural-c model 1
+dense 1 sigmoid

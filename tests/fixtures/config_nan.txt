@@ -1,0 +1,5 @@
+neural-c project 1
+epochs 10
+learning_rate nan
+seed 1
+loss mse

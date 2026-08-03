@@ -1,0 +1,3 @@
+neural-c model 1
+input 2
+dense 3 leaky_relu
