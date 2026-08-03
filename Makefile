@@ -14,7 +14,7 @@ CPPFLAGS += -Iinclude
 CFLAGS += -std=c11 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow $(THREAD_FLAGS)
 LDLIBS += -lm
 
-LIBRARY_SOURCES := src/activation.c src/atomic_file.c src/backprop.c src/batch.c src/cli_options.c src/dense.c src/digest.c src/error.c src/gradient.c src/gradient_check.c src/init.c src/loss.c src/model.c src/parallel.c src/parse.c src/path.c src/persistence.c src/project.c src/random.c src/sha256.c src/tensor_ops.c src/training.c src/version.c
+LIBRARY_SOURCES := src/activation.c src/atomic_file.c src/backprop.c src/batch.c src/cli_options.c src/dense.c src/digest.c src/error.c src/executor.c src/gradient.c src/gradient_check.c src/init.c src/loss.c src/model.c src/parallel.c src/parse.c src/path.c src/persistence.c src/project.c src/random.c src/sha256.c src/tensor_ops.c src/training.c src/version.c
 PROGRAM_SOURCES := src/main.c $(LIBRARY_SOURCES)
 PUBLIC_HEADERS := $(wildcard include/neural/*.h)
 INTERNAL_HEADERS := $(wildcard src/*.h)

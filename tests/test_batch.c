@@ -73,6 +73,37 @@ static int gradient_equals(const NeuralGradient *gradient, neural_real expected)
     }
 }
 
+static int gradient_nearly_equals(const NeuralGradient *gradient,
+                                  neural_real expected,
+                                  neural_real tolerance)
+{
+    size_t layer_index;
+
+    for (layer_index = 0U; ; layer_index++) {
+        size_t weight_count;
+        size_t bias_count;
+        const neural_real *weights = neural_gradient_layer_weights_const(
+            gradient, layer_index, &weight_count);
+        const neural_real *biases = neural_gradient_layer_biases_const(
+            gradient, layer_index, &bias_count);
+        size_t index;
+
+        if (weights == NULL || biases == NULL) {
+            return layer_index > 0U;
+        }
+        for (index = 0U; index < weight_count; index++) {
+            if (fabs(weights[index] - expected) > tolerance) {
+                return 0;
+            }
+        }
+        for (index = 0U; index < bias_count; index++) {
+            if (fabs(biases[index] - expected) > tolerance) {
+                return 0;
+            }
+        }
+    }
+}
+
 static void test_batch_plan(void)
 {
     NeuralBatchPlan plan;
@@ -125,6 +156,8 @@ static void test_batch_accumulator(void)
     NeuralGradient *second = NULL;
     NeuralGradient *third = NULL;
     NeuralGradient *other = NULL;
+    NeuralGradient *reduced = NULL;
+    NeuralGradient *ordered[3];
     NeuralBatchAccumulator *accumulator = NULL;
     NeuralError error;
     int prepared;
@@ -135,6 +168,7 @@ static void test_batch_accumulator(void)
                neural_gradient_create(model, &second, &error) &&
                neural_gradient_create(model, &third, &error) &&
                neural_gradient_create(other_model, &other, &error) &&
+               neural_gradient_create(model, &reduced, &error) &&
                neural_batch_accumulator_create(model, &accumulator, &error) &&
                fill_gradient(first, 1.0) && fill_gradient(second, 2.0) &&
                fill_gradient(third, 3.0) && fill_gradient(other, 4.0);
@@ -143,7 +177,10 @@ static void test_batch_accumulator(void)
         check(neural_batch_accumulator_gradient(accumulator) == NULL &&
                   neural_batch_accumulator_sample_count(accumulator) == 0U,
               "new accumulator must not expose an unfinished gradient");
-        check(neural_batch_accumulator_reset(accumulator, 4U, &error),
+        check(!neural_batch_accumulator_reset(accumulator, 4U, 4U, &error) &&
+                  !neural_batch_accumulator_reset(accumulator, 5U, 4U, &error),
+              "empty and reversed batch ranges must be rejected");
+        check(neural_batch_accumulator_reset(accumulator, 4U, 7U, &error),
               "batch accumulator reset must establish global sample order");
         check(!neural_batch_accumulator_add(accumulator, 5U, first, &error) &&
                   neural_batch_accumulator_sample_count(accumulator) == 0U,
@@ -152,8 +189,12 @@ static void test_batch_accumulator(void)
                   neural_batch_accumulator_sample_count(accumulator) == 0U,
               "incompatible gradient must leave the accumulator unchanged");
         check(neural_batch_accumulator_add(accumulator, 4U, first, &error) &&
-                  neural_batch_accumulator_add(accumulator, 5U, second, &error) &&
-                  neural_batch_accumulator_add(accumulator, 6U, third, &error),
+                  !neural_batch_accumulator_finalize(accumulator, &error) &&
+                  neural_batch_accumulator_sample_count(accumulator) == 1U,
+              "incomplete batch must not be finalizable");
+        check(neural_batch_accumulator_add(accumulator, 5U, second, &error) &&
+                  neural_batch_accumulator_add(accumulator, 6U, third, &error) &&
+                  !neural_batch_accumulator_add(accumulator, 7U, first, &error),
               "ordered gradients must accumulate successfully");
         check(neural_batch_accumulator_finalize(accumulator, &error) &&
                   neural_batch_accumulator_sample_count(accumulator) == 3U &&
@@ -163,17 +204,59 @@ static void test_batch_accumulator(void)
         check(!neural_batch_accumulator_add(accumulator, 7U, first, &error) &&
                   !neural_batch_accumulator_finalize(accumulator, &error),
               "finalized accumulator must reject further state changes");
-        check(neural_batch_accumulator_reset(accumulator, 0U, &error) &&
-                  neural_batch_accumulator_gradient(accumulator) == NULL &&
-                  !neural_batch_accumulator_finalize(accumulator, &error),
-              "reset must make the accumulator reusable but not empty-finalizable");
+        check(neural_batch_accumulator_reset(accumulator, 0U, 1U, &error) &&
+                  neural_batch_accumulator_gradient(accumulator) == NULL,
+              "reset must make the accumulator reusable");
         check(neural_batch_accumulator_add(accumulator, 0U, third, &error) &&
                   neural_batch_accumulator_finalize(accumulator, &error) &&
                   gradient_equals(
                       neural_batch_accumulator_gradient(accumulator), 3.0),
               "single-sample batch must retain its gradient");
+        check(fill_gradient(first, 1e16) && fill_gradient(second, 1.0) &&
+                  fill_gradient(third, -1e16) &&
+                  neural_batch_accumulator_reset(accumulator, 10U, 13U, &error) &&
+                  neural_batch_accumulator_add(accumulator, 10U, first, &error) &&
+                  neural_batch_accumulator_add(accumulator, 11U, second, &error) &&
+                  neural_batch_accumulator_add(accumulator, 12U, third, &error) &&
+                  neural_batch_accumulator_finalize(accumulator, &error) &&
+                  gradient_nearly_equals(
+                      neural_batch_accumulator_gradient(accumulator),
+                      1.0 / 3.0,
+                      1e-16),
+              "compensated accumulation must preserve a small gradient");
+        ordered[0] = first;
+        ordered[1] = second;
+        ordered[2] = third;
+        check(neural_gradient_reduce_ordered(reduced, ordered, 3U, &error) &&
+                  gradient_equals(reduced, 1.0),
+              "ordered reduction must use the same compensated arithmetic");
+        check(fill_gradient(first, DBL_MAX) &&
+                  fill_gradient(second, DBL_MAX) &&
+                  neural_batch_accumulator_reset(accumulator, 20U, 22U, &error) &&
+                  neural_batch_accumulator_add(accumulator, 20U, first, &error) &&
+                  !neural_batch_accumulator_add(accumulator,
+                                                21U,
+                                                second,
+                                                &error) &&
+                  neural_batch_accumulator_sample_count(accumulator) == 1U &&
+                  !neural_batch_accumulator_finalize(accumulator, &error),
+              "overflowing compensated add must preserve accumulator state");
+        check(fill_gradient(first, 2.0) &&
+                  neural_batch_accumulator_reset(accumulator,
+                                                 SIZE_MAX - 1U,
+                                                 SIZE_MAX,
+                                                 &error) &&
+                  neural_batch_accumulator_add(accumulator,
+                                               SIZE_MAX - 1U,
+                                               first,
+                                               &error) &&
+                  neural_batch_accumulator_finalize(accumulator, &error) &&
+                  gradient_equals(
+                      neural_batch_accumulator_gradient(accumulator), 2.0),
+              "half-open batch range must support the maximum end index");
     }
     neural_batch_accumulator_free(accumulator);
+    neural_gradient_free(reduced);
     neural_gradient_free(other);
     neural_gradient_free(third);
     neural_gradient_free(second);

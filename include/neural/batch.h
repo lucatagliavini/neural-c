@@ -31,6 +31,7 @@ int neural_batch_accumulator_create(const NeuralModel *model,
 void neural_batch_accumulator_free(NeuralBatchAccumulator *accumulator);
 int neural_batch_accumulator_reset(NeuralBatchAccumulator *accumulator,
                                    size_t sample_begin,
+                                   size_t sample_end,
                                    NeuralError *error);
 int neural_batch_accumulator_add(NeuralBatchAccumulator *accumulator,
                                  size_t sample_index,

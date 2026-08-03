@@ -19,10 +19,13 @@
     parameter restoration and activation coverage.
   - **4.3 — complete:** generic deterministic batch planning and ordered,
     transactional accumulation; public behavior remains full-batch.
-  - **4.4 — next:** persistent pthread workers and bounded-memory execution
-    waves.
-  - **4.5:** coherent epoch loss reporting, fresh `train`, and atomic final
-    weights.
+  - **4.3.1 — complete:** complete batch-range invariants,
+    Neumaier-compensated accumulation, and bounded execution-wave planning.
+  - **4.4 — complete:** persistent pthread workers, deterministic error
+    selection, reusable bounded-memory execution waves, and coordinator-only
+    accumulation.
+  - **4.5 — next:** coherent epoch loss reporting, fresh `train`, and atomic
+    final weights.
 - **Milestone 5:** periodic checkpoints, signals, `--resume`, refinement, and
   end-to-end XOR convergence.
 - **Milestone 6:** runtime validation on x86-64 and ppc64le.

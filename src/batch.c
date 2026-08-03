@@ -3,9 +3,13 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "gradient_internal.h"
+
 struct NeuralBatchAccumulator {
     NeuralGradient *gradient;
+    NeuralGradient *compensation;
     size_t next_sample_index;
+    size_t sample_end;
     size_t sample_count;
     int active;
     int finalized;
@@ -83,7 +87,9 @@ int neural_batch_accumulator_create(const NeuralModel *model,
         neural_error_set(error, "unable to allocate batch accumulator");
         return 0;
     }
-    if (!neural_gradient_create(model, &created->gradient, error)) {
+    if (!neural_gradient_create(model, &created->gradient, error) ||
+        !neural_gradient_create(model, &created->compensation, error)) {
+        neural_gradient_free(created->gradient);
         free(created);
         return 0;
     }
@@ -96,22 +102,26 @@ void neural_batch_accumulator_free(NeuralBatchAccumulator *accumulator)
     if (accumulator == NULL) {
         return;
     }
+    neural_gradient_free(accumulator->compensation);
     neural_gradient_free(accumulator->gradient);
     free(accumulator);
 }
 
 int neural_batch_accumulator_reset(NeuralBatchAccumulator *accumulator,
                                    size_t sample_begin,
+                                   size_t sample_end,
                                    NeuralError *error)
 {
-    if (accumulator == NULL || sample_begin == SIZE_MAX) {
+    if (accumulator == NULL || sample_begin >= sample_end) {
         neural_error_set(error, "invalid batch accumulator reset");
         return 0;
     }
-    if (!neural_gradient_zero(accumulator->gradient, error)) {
+    if (!neural_gradient_zero(accumulator->gradient, error) ||
+        !neural_gradient_zero(accumulator->compensation, error)) {
         return 0;
     }
     accumulator->next_sample_index = sample_begin;
+    accumulator->sample_end = sample_end;
     accumulator->sample_count = 0U;
     accumulator->active = 1;
     accumulator->finalized = 0;
@@ -124,13 +134,17 @@ int neural_batch_accumulator_add(NeuralBatchAccumulator *accumulator,
                                  NeuralError *error)
 {
     if (accumulator == NULL || !accumulator->active ||
-        accumulator->finalized || sample_index == SIZE_MAX ||
+        accumulator->finalized ||
+        accumulator->next_sample_index >= accumulator->sample_end ||
         sample_index != accumulator->next_sample_index) {
         neural_error_set(error,
                          "sample gradients must be accumulated in batch order");
         return 0;
     }
-    if (!neural_gradient_add(accumulator->gradient, sample_gradient, error)) {
+    if (!neural_gradient_accumulate_compensated(accumulator->gradient,
+                                                accumulator->compensation,
+                                                sample_gradient,
+                                                error)) {
         return 0;
     }
     accumulator->next_sample_index++;
@@ -144,14 +158,16 @@ int neural_batch_accumulator_finalize(NeuralBatchAccumulator *accumulator,
     neural_real divisor;
 
     if (accumulator == NULL || !accumulator->active ||
-        accumulator->finalized || accumulator->sample_count == 0U) {
-        neural_error_set(error, "non-empty active batch is required");
+        accumulator->finalized || accumulator->sample_count == 0U ||
+        accumulator->next_sample_index != accumulator->sample_end) {
+        neural_error_set(error, "complete non-empty batch is required");
         return 0;
     }
     divisor = (neural_real)accumulator->sample_count;
-    if (!neural_gradient_scale(accumulator->gradient,
-                               1.0 / divisor,
-                               error)) {
+    if (!neural_gradient_finish_compensated(accumulator->gradient,
+                                            accumulator->compensation,
+                                            1.0 / divisor,
+                                            error)) {
         return 0;
     }
     accumulator->finalized = 1;

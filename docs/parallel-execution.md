@@ -14,8 +14,8 @@ by two threads. Worker contexts must not outlive their model.
 Parameter setters, gradient application, persistence loading, and training
 updates require exclusive model access. Persistence saving may read a model
 only while no writer can change it. The library does not hide locks inside the
-model; the future executor owns worker lifetime, joins, and the exclusive
-update boundary.
+model. `NeuralParallelExecutor` owns worker lifetime and joins; its single
+coordinator owns the exclusive update boundary between batch calls.
 
 ## Deterministic Tasks and Reduction
 
@@ -25,13 +25,16 @@ it never changes task boundaries. Each completed task leaves its sample
 gradient in its worker context. After each bounded execution wave, the main
 thread feeds those gradients to `NeuralBatchAccumulator` by increasing global
 sample index, then reuses the worker buffers. Finalization forms the batch mean
-using its actual sample count before one coordinated model update.
+only after the declared batch range is complete, using its actual sample count
+before one coordinated model update. `NeuralExecutionPlan` derives
+contiguous, bounded wave ranges from the batch range and effective worker count.
 
 This correctness-first design makes floating-point grouping independent of
-thread scheduling and thread count. It requires one gradient per worker plus
-one accumulator gradient, keeping storage proportional to
-`thread_count * parameter_count`. Milestone 4.4 implements the persistent
-worker pool that drives these waves.
+thread scheduling and thread count. Neumaier compensation improves numerical
+accuracy while preserving that fixed order. Storage requires one gradient per
+worker plus sum and compensation gradients, remaining proportional to
+`(pool_size + 2) * parameter_count`. The persistent executor drives these
+waves without allocating or copying one gradient per sample.
 Workers must not update weights directly, use atomic floating-point additions,
 or implement asynchronous “Hogwild” training.
 

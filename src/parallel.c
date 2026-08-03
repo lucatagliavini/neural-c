@@ -23,42 +23,74 @@ int neural_execution_config_validate(const NeuralExecutionConfig *config,
     return 1;
 }
 
-int neural_execution_plan_create(size_t sample_count,
+static int execution_plan_is_valid(const NeuralExecutionPlan *plan)
+{
+    size_t sample_count;
+    size_t expected_wave_count;
+
+    if (plan == NULL || plan->sample_begin >= plan->sample_end) {
+        return 0;
+    }
+    sample_count = plan->sample_end - plan->sample_begin;
+    if (plan->worker_count == 0U || plan->worker_count > sample_count) {
+        return 0;
+    }
+    expected_wave_count = sample_count / plan->worker_count;
+    if (sample_count % plan->worker_count != 0U) {
+        expected_wave_count++;
+    }
+    return plan->wave_count == expected_wave_count;
+}
+
+int neural_execution_plan_create(size_t sample_begin,
+                                 size_t sample_end,
                                  const NeuralExecutionConfig *config,
                                  NeuralExecutionPlan *plan,
                                  NeuralError *error)
 {
-    if (plan == NULL || sample_count == 0U ||
+    size_t sample_count;
+
+    if (plan == NULL || sample_begin >= sample_end ||
         !neural_execution_config_validate(config, error)) {
-        if (plan == NULL || sample_count == 0U) {
+        if (plan == NULL || sample_begin >= sample_end) {
             neural_error_set(error,
-                             "execution plan requires samples and an output");
+                             "execution wave plan requires a sample range");
         }
         return 0;
     }
-    plan->sample_count = sample_count;
+    sample_count = sample_end - sample_begin;
+    plan->sample_begin = sample_begin;
+    plan->sample_end = sample_end;
     plan->worker_count = config->thread_count < sample_count
                              ? config->thread_count
                              : sample_count;
-    plan->task_count = sample_count;
+    plan->wave_count = sample_count / plan->worker_count;
+    if (sample_count % plan->worker_count != 0U) {
+        plan->wave_count++;
+    }
     return 1;
 }
 
-int neural_execution_plan_task_range(const NeuralExecutionPlan *plan,
-                                     size_t task_index,
-                                     size_t *begin,
-                                     size_t *end,
+int neural_execution_plan_wave_range(const NeuralExecutionPlan *plan,
+                                     size_t wave_index,
+                                     size_t *sample_begin,
+                                     size_t *sample_end,
                                      NeuralError *error)
 {
-    if (plan == NULL || begin == NULL || end == NULL ||
-        plan->sample_count == 0U ||
-        plan->task_count != plan->sample_count ||
-        plan->worker_count == 0U || task_index >= plan->task_count) {
-        neural_error_set(error, "invalid deterministic execution task");
+    size_t begin;
+    size_t remaining;
+
+    if (!execution_plan_is_valid(plan) || sample_begin == NULL ||
+        sample_end == NULL || wave_index >= plan->wave_count) {
+        neural_error_set(error, "invalid execution wave range request");
         return 0;
     }
-    *begin = task_index;
-    *end = task_index + 1U;
+    begin = plan->sample_begin + wave_index * plan->worker_count;
+    remaining = plan->sample_end - begin;
+    *sample_begin = begin;
+    *sample_end = begin + (remaining < plan->worker_count
+                               ? remaining
+                               : plan->worker_count);
     return 1;
 }
 

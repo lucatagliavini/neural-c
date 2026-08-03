@@ -40,10 +40,12 @@ main thread performs exactly one exclusive model update per batch.
 `NeuralBatchPlan` validates the resolved batch size and maps each batch to a
 contiguous half-open sample range. `NeuralBatchAccumulator` accepts gradients
 only in increasing global sample-index order. It owns one model-shaped
-gradient, can be reset between batches, and exposes that gradient only after
-finalization has divided it by the accumulated sample count. Failed or
-out-of-order additions do not advance its state; gradient addition validates
-every sum before changing any destination value.
+sum plus one compensation buffer, can be reset between batches, and exposes
+the gradient only after the declared `[begin, end)` range is complete and
+finalization has divided it by that range's sample count. Failed,
+out-of-order, or out-of-range additions do not advance its state. Neumaier
+compensation preserves small terms without changing the required sample order;
+every operation validates all results before changing either buffer.
 
 Batch size is not yet public configuration. When exposed, it must be owned by
 training configuration and its canonical digest because it changes parameter
@@ -51,18 +53,28 @@ updates. It must never be treated like execution-only `thread_count`.
 
 ## Parallel Execution
 
-A persistent POSIX thread pool is created once per training run. Its effective
-worker count is the smaller of the requested thread count and sample count.
+A `NeuralParallelExecutor` creates a persistent POSIX thread pool once per
+training run. Pool size is the smaller of the requested thread count and
+dataset sample count; each batch activates at most its own sample count.
 Workers execute deterministic waves containing at most one sample per worker.
 Each worker owns a `NeuralWorkerContext`, error, loss, sample index, and status.
+`NeuralExecutionPlan` maps the current batch range to contiguous waves of
+at most the effective worker count; the final wave may be smaller.
 
 After every wave, the main thread accumulates completed gradients by increasing
 sample index into the batch accumulator. Worker buffers are then reused. This
-keeps gradient memory proportional to `thread_count * parameter_count`, while
-the arithmetic order remains independent of scheduling and thread count.
-Workers never update the model. Errors are selected by the lowest failing
-sample index. Cancellation is cooperative at task boundaries; asynchronous
-thread cancellation is forbidden.
+keeps gradient memory proportional to
+`(pool_size + 2) * parameter_count`, including the sum and compensation
+buffers. The arithmetic order remains independent of scheduling and thread
+count. Workers never update the model. Errors are selected by the lowest
+failing sample index. Cancellation is cooperative at task boundaries;
+asynchronous thread cancellation is forbidden.
+
+The executor is driven by one coordinator. Its model and dataset must outlive
+it and remain unchanged while a batch operation is active. A successful call
+returns an executor-owned mean gradient valid until the next batch call. A
+failed wave contributes no gradients; a later batch call resets the
+accumulator and may safely reuse the pool.
 
 ## Loss and Completion
 

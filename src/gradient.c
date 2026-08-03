@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "neural/tensor_ops.h"
+#include "gradient_internal.h"
 
 typedef struct {
     size_t weight_count;
@@ -318,6 +319,205 @@ int neural_gradient_add(NeuralGradient *destination,
     return 1;
 }
 
+static int compensated_value(neural_real sum,
+                             neural_real compensation,
+                             neural_real addend,
+                             neural_real *new_sum,
+                             neural_real *new_compensation)
+{
+    neural_real total;
+    neural_real correction;
+    neural_real corrected;
+
+    if (!isfinite(sum) || !isfinite(compensation) || !isfinite(addend)) {
+        return 0;
+    }
+    total = sum + addend;
+    if (!isfinite(total)) {
+        return 0;
+    }
+    if (fabs(sum) >= fabs(addend)) {
+        correction = (sum - total) + addend;
+    } else {
+        correction = (addend - total) + sum;
+    }
+    corrected = compensation + correction;
+    if (!isfinite(correction) || !isfinite(corrected) ||
+        !isfinite(total + corrected)) {
+        return 0;
+    }
+    *new_sum = total;
+    *new_compensation = corrected;
+    return 1;
+}
+
+static int compensated_gradients_are_compatible(
+    const NeuralGradient *sum,
+    const NeuralGradient *compensation,
+    const NeuralGradient *addend,
+    NeuralError *error)
+{
+    if (sum == NULL || compensation == NULL || addend == NULL ||
+        sum == compensation || sum == addend || compensation == addend ||
+        sum->model != compensation->model || sum->model != addend->model ||
+        sum->layer_count != compensation->layer_count ||
+        sum->layer_count != addend->layer_count) {
+        neural_error_set(error,
+                         "compensated gradients require one model and distinct buffers");
+        return 0;
+    }
+    return 1;
+}
+
+int neural_gradient_accumulate_compensated(
+    NeuralGradient *sum,
+    NeuralGradient *compensation,
+    const NeuralGradient *addend,
+    NeuralError *error)
+{
+    size_t layer_index;
+
+    if (!compensated_gradients_are_compatible(sum,
+                                              compensation,
+                                              addend,
+                                              error)) {
+        return 0;
+    }
+    for (layer_index = 0U; layer_index < sum->layer_count; layer_index++) {
+        NeuralGradientLayer *sum_layer = &sum->layers[layer_index];
+        NeuralGradientLayer *compensation_layer =
+            &compensation->layers[layer_index];
+        const NeuralGradientLayer *addend_layer = &addend->layers[layer_index];
+        size_t index;
+        neural_real ignored_sum;
+        neural_real ignored_compensation;
+
+        if (sum_layer->weight_count != compensation_layer->weight_count ||
+            sum_layer->weight_count != addend_layer->weight_count ||
+            sum_layer->bias_count != compensation_layer->bias_count ||
+            sum_layer->bias_count != addend_layer->bias_count) {
+            neural_error_set(error,
+                             "compensated gradient dimensions do not match");
+            return 0;
+        }
+        for (index = 0U; index < sum_layer->weight_count; index++) {
+            if (!compensated_value(sum_layer->weights[index],
+                                   compensation_layer->weights[index],
+                                   addend_layer->weights[index],
+                                   &ignored_sum,
+                                   &ignored_compensation)) {
+                neural_error_set(error,
+                                 "compensated weight sum is not finite");
+                return 0;
+            }
+        }
+        for (index = 0U; index < sum_layer->bias_count; index++) {
+            if (!compensated_value(sum_layer->biases[index],
+                                   compensation_layer->biases[index],
+                                   addend_layer->biases[index],
+                                   &ignored_sum,
+                                   &ignored_compensation)) {
+                neural_error_set(error,
+                                 "compensated bias sum is not finite");
+                return 0;
+            }
+        }
+    }
+    for (layer_index = 0U; layer_index < sum->layer_count; layer_index++) {
+        NeuralGradientLayer *sum_layer = &sum->layers[layer_index];
+        NeuralGradientLayer *compensation_layer =
+            &compensation->layers[layer_index];
+        const NeuralGradientLayer *addend_layer = &addend->layers[layer_index];
+        size_t index;
+
+        for (index = 0U; index < sum_layer->weight_count; index++) {
+            (void)compensated_value(sum_layer->weights[index],
+                                    compensation_layer->weights[index],
+                                    addend_layer->weights[index],
+                                    &sum_layer->weights[index],
+                                    &compensation_layer->weights[index]);
+        }
+        for (index = 0U; index < sum_layer->bias_count; index++) {
+            (void)compensated_value(sum_layer->biases[index],
+                                    compensation_layer->biases[index],
+                                    addend_layer->biases[index],
+                                    &sum_layer->biases[index],
+                                    &compensation_layer->biases[index]);
+        }
+    }
+    return 1;
+}
+
+int neural_gradient_finish_compensated(NeuralGradient *sum,
+                                       const NeuralGradient *compensation,
+                                       neural_real factor,
+                                       NeuralError *error)
+{
+    size_t layer_index;
+
+    if (sum == NULL || compensation == NULL || sum == compensation ||
+        sum->model != compensation->model ||
+        sum->layer_count != compensation->layer_count || !isfinite(factor)) {
+        neural_error_set(error, "invalid compensated gradient finalization");
+        return 0;
+    }
+    for (layer_index = 0U; layer_index < sum->layer_count; layer_index++) {
+        NeuralGradientLayer *sum_layer = &sum->layers[layer_index];
+        const NeuralGradientLayer *compensation_layer =
+            &compensation->layers[layer_index];
+        size_t index;
+
+        if (sum_layer->weight_count != compensation_layer->weight_count ||
+            sum_layer->bias_count != compensation_layer->bias_count) {
+            neural_error_set(error,
+                             "compensated gradient dimensions do not match");
+            return 0;
+        }
+        for (index = 0U; index < sum_layer->weight_count; index++) {
+            neural_real combined = sum_layer->weights[index] +
+                                   compensation_layer->weights[index];
+
+            if (!isfinite(sum_layer->weights[index]) ||
+                !isfinite(compensation_layer->weights[index]) ||
+                !isfinite(combined) || !isfinite(combined * factor)) {
+                neural_error_set(error,
+                                 "final compensated weight is not finite");
+                return 0;
+            }
+        }
+        for (index = 0U; index < sum_layer->bias_count; index++) {
+            neural_real combined = sum_layer->biases[index] +
+                                   compensation_layer->biases[index];
+
+            if (!isfinite(sum_layer->biases[index]) ||
+                !isfinite(compensation_layer->biases[index]) ||
+                !isfinite(combined) || !isfinite(combined * factor)) {
+                neural_error_set(error,
+                                 "final compensated bias is not finite");
+                return 0;
+            }
+        }
+    }
+    for (layer_index = 0U; layer_index < sum->layer_count; layer_index++) {
+        NeuralGradientLayer *sum_layer = &sum->layers[layer_index];
+        const NeuralGradientLayer *compensation_layer =
+            &compensation->layers[layer_index];
+        size_t index;
+
+        for (index = 0U; index < sum_layer->weight_count; index++) {
+            sum_layer->weights[index] =
+                (sum_layer->weights[index] +
+                 compensation_layer->weights[index]) * factor;
+        }
+        for (index = 0U; index < sum_layer->bias_count; index++) {
+            sum_layer->biases[index] =
+                (sum_layer->biases[index] +
+                 compensation_layer->biases[index]) * factor;
+        }
+    }
+    return 1;
+}
+
 int neural_gradient_reduce_ordered(
     NeuralGradient *destination,
     NeuralGradient *const *sample_gradients,
@@ -325,47 +525,45 @@ int neural_gradient_reduce_ordered(
     NeuralError *error)
 {
     NeuralGradient *accumulator = NULL;
+    NeuralGradient *compensation = NULL;
     size_t sample_index;
-    size_t layer_index;
 
     if (destination == NULL || sample_gradients == NULL ||
         sample_count == 0U) {
         neural_error_set(error, "ordered gradient reduction requires samples");
         return 0;
     }
-    if (!neural_gradient_create(destination->model, &accumulator, error)) {
+    if (!neural_gradient_create(destination->model, &accumulator, error) ||
+        !neural_gradient_create(destination->model, &compensation, error)) {
+        neural_gradient_free(accumulator);
         return 0;
     }
     for (sample_index = 0U; sample_index < sample_count; sample_index++) {
         if (sample_gradients[sample_index] == destination ||
-            !neural_gradient_add(accumulator,
-                                 sample_gradients[sample_index],
-                                 error)) {
+            !neural_gradient_accumulate_compensated(
+                accumulator,
+                compensation,
+                sample_gradients[sample_index],
+                error)) {
             if (sample_gradients[sample_index] == destination) {
                 neural_error_set(error,
                                  "reduction destination cannot be an input");
             }
+            neural_gradient_free(compensation);
             neural_gradient_free(accumulator);
             return 0;
         }
     }
-    for (layer_index = 0U;
-         layer_index < destination->layer_count;
-         layer_index++) {
-        NeuralGradientLayer *destination_layer =
-            &destination->layers[layer_index];
-        const NeuralGradientLayer *accumulator_layer =
-            &accumulator->layers[layer_index];
-
-        memcpy(destination_layer->weights,
-               accumulator_layer->weights,
-               destination_layer->weight_count *
-                   sizeof(*destination_layer->weights));
-        memcpy(destination_layer->biases,
-               accumulator_layer->biases,
-               destination_layer->bias_count *
-                   sizeof(*destination_layer->biases));
+    if (!neural_gradient_finish_compensated(accumulator,
+                                            compensation,
+                                            1.0,
+                                            error) ||
+        !neural_gradient_copy(destination, accumulator, error)) {
+        neural_gradient_free(compensation);
+        neural_gradient_free(accumulator);
+        return 0;
     }
+    neural_gradient_free(compensation);
     neural_gradient_free(accumulator);
     return 1;
 }
