@@ -12,12 +12,19 @@
 - **Milestone 3.1 — complete:** domain-specific dense/loss/tensor primitives,
   activation derivatives, model-shaped private gradients, deterministic sample
   tasks and reduction, thread-aware worker contexts, and isolated atomic I/O.
-- **Milestone 4:** compose full-network backpropagation, finite-difference
-  gradient checks, batch training, and loss reporting.
+- **Milestone 4 — in progress:**
+  - **4.1 — complete:** allocation-free single-sample backpropagation and
+    workspace scratch buffers.
+  - **4.2 — next:** central finite-difference gradient checks.
+  - **4.3:** generic deterministic batch planning and accumulation; public
+    behavior remains full-batch.
+  - **4.4:** persistent pthread workers and bounded-memory execution waves.
+  - **4.5:** coherent epoch loss reporting, fresh `train`, and atomic final
+    weights.
 - **Milestone 5:** periodic checkpoints, signals, `--resume`, refinement, and
   end-to-end XOR convergence.
 - **Milestone 6:** runtime validation on x86-64 and ppc64le.
 
-Read `specification.md`, `model-runtime.md`, `parallel-execution.md`,
-`persistence-format.md`, and `training-resume.md` before changing execution,
-formats, training state, or persistence semantics.
+Read `specification.md`, `model-runtime.md`, `training-engine.md`,
+`parallel-execution.md`, `persistence-format.md`, and `training-resume.md`
+before changing execution, formats, training state, or persistence semantics.

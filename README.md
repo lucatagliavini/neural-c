@@ -17,6 +17,8 @@ Weights, checkpoints, and canonical digests are defined in
 [`docs/persistence-format.md`](docs/persistence-format.md).
 Thread ownership and deterministic reduction are defined in
 [`docs/parallel-execution.md`](docs/parallel-execution.md).
+Backpropagation, batch semantics, and the planned worker pool are defined in
+[`docs/training-engine.md`](docs/training-engine.md).
 
 ## Project format
 

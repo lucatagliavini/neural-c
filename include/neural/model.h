@@ -56,6 +56,9 @@ const neural_real *neural_workspace_layer_activations(
     const NeuralWorkspace *workspace,
     size_t layer_index,
     size_t *count);
+const neural_real *neural_workspace_input_gradients(
+    const NeuralWorkspace *workspace,
+    size_t *count);
 
 int neural_model_forward(const NeuralModel *model,
                          NeuralWorkspace *workspace,

@@ -7,9 +7,10 @@ This document is authoritative for model execution and parameter layout.
 `NeuralModelSpec` is the owned, parsed description of `model.txt`.
 `NeuralModel` is an opaque runtime object with a deep copy of every activation
 specification, plus allocated weights and biases. `NeuralWorkspace` owns
-pre-activation and activation buffers for one model. A workspace must not
-outlive or be used with a different model. Its saved forward values are
-available through read-only accessors for backpropagation.
+pre-activation, activation, backward scratch, and model-input gradient buffers
+for one model. A workspace must not outlive or be used with a different model.
+Saved forward values and the last successful model-input gradient are available
+through read-only accessors.
 
 Each dense layer stores weights in neuron-major row order:
 
@@ -54,8 +55,10 @@ intermediate is an error. Do not enable unsafe floating-point optimizations
 such as `-ffast-math`.
 
 Separate workspaces avoid allocation during forward execution and reserve
-per-layer values needed by future backpropagation. Numerically sensitive tests
-use tolerances across architectures; PRNG integer sequence tests are exact.
+per-layer values needed by backpropagation. Forward and single-sample backward
+perform no allocation after workspace and gradient construction. Numerically
+sensitive tests use tolerances across architectures; PRNG integer sequence
+tests are exact.
 
 ## Numerical Modules and Gradients
 
@@ -75,5 +78,10 @@ biases without modifying the model. At non-differentiable zero, ReLU uses
 derivative 0 and leaky ReLU uses the non-negative branch derivative 1. Softmax
 backward computes the full Jacobian-vector product rather than an element-wise
 approximation.
+
+`neural_model_sample_gradient` performs forward evaluation, MSE evaluation,
+and reverse traversal into a model-compatible `NeuralGradient`. It requires a
+workspace and gradient owned by the same exact model. Output values are valid
+only on success; a failed sample must never participate in batch reduction.
 
 See `parallel-execution.md` for ownership and deterministic reduction rules.

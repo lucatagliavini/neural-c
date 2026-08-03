@@ -43,4 +43,4 @@ Add tests with every behavior change and bug fix. Name test files after the unit
 
 History uses short imperative subjects. Keep commits focused (for example, `Add tensor allocation checks`). Pull requests should explain motivation, verification, and linked issues; attach logs or screenshots only when useful.
 
-Before changing model execution, training, or persistence, read `docs/model-runtime.md`, `docs/parallel-execution.md`, `docs/persistence-format.md`, `docs/training-resume.md`, and `docs/roadmap.md`. Preserve documented parameter layout, deterministic reduction order, and file ownership.
+Before changing model execution, training, or persistence, read `docs/model-runtime.md`, `docs/training-engine.md`, `docs/parallel-execution.md`, `docs/persistence-format.md`, `docs/training-resume.md`, and `docs/roadmap.md`. Preserve documented parameter layout, deterministic reduction order, and file ownership.

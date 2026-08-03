@@ -7,30 +7,7 @@
 
 #include "neural/dense.h"
 #include "neural/random.h"
-
-typedef struct {
-    size_t input_count;
-    size_t neuron_count;
-    size_t weight_count;
-    NeuralActivationSpec activation;
-    neural_real *weights;
-    neural_real *biases;
-} NeuralRuntimeLayer;
-
-struct NeuralModel {
-    size_t input_count;
-    size_t layer_count;
-    size_t parameter_count;
-    uint64_t random_state;
-    NeuralRuntimeLayer *layers;
-};
-
-struct NeuralWorkspace {
-    const NeuralModel *model;
-    size_t layer_count;
-    neural_real **pre_activations;
-    neural_real **activations;
-};
+#include "model_internal.h"
 
 static int checked_multiply(size_t left, size_t right, size_t *result)
 {
@@ -311,25 +288,34 @@ int neural_model_set_layer_parameters(NeuralModel *model,
     return 1;
 }
 
-void neural_workspace_free(NeuralWorkspace *workspace)
+static void free_workspace_buffers(neural_real **buffers,
+                                   size_t layer_count)
 {
     size_t layer_index;
 
+    if (buffers == NULL) {
+        return;
+    }
+    for (layer_index = 0U; layer_index < layer_count; layer_index++) {
+        free(buffers[layer_index]);
+    }
+    free(buffers);
+}
+
+void neural_workspace_free(NeuralWorkspace *workspace)
+{
     if (workspace == NULL) {
         return;
     }
-    for (layer_index = 0U;
-         layer_index < workspace->layer_count;
-         layer_index++) {
-        if (workspace->pre_activations != NULL) {
-            free(workspace->pre_activations[layer_index]);
-        }
-        if (workspace->activations != NULL) {
-            free(workspace->activations[layer_index]);
-        }
-    }
-    free(workspace->pre_activations);
-    free(workspace->activations);
+    free_workspace_buffers(workspace->pre_activations,
+                           workspace->layer_count);
+    free_workspace_buffers(workspace->activations,
+                           workspace->layer_count);
+    free_workspace_buffers(workspace->activation_gradients,
+                           workspace->layer_count);
+    free_workspace_buffers(workspace->pre_activation_gradients,
+                           workspace->layer_count);
+    free(workspace->input_gradients);
     free(workspace);
 }
 
@@ -356,7 +342,18 @@ int neural_workspace_create(const NeuralModel *model,
                                       sizeof(*created->pre_activations));
     created->activations = calloc(model->layer_count,
                                   sizeof(*created->activations));
-    if (created->pre_activations == NULL || created->activations == NULL) {
+    created->activation_gradients = calloc(
+        model->layer_count,
+        sizeof(*created->activation_gradients));
+    created->pre_activation_gradients = calloc(
+        model->layer_count,
+        sizeof(*created->pre_activation_gradients));
+    created->input_gradients = calloc(model->input_count,
+                                      sizeof(*created->input_gradients));
+    if (created->pre_activations == NULL || created->activations == NULL ||
+        created->activation_gradients == NULL ||
+        created->pre_activation_gradients == NULL ||
+        created->input_gradients == NULL) {
         neural_error_set(error, "unable to allocate workspace layers");
         neural_workspace_free(created);
         return 0;
@@ -367,8 +364,14 @@ int neural_workspace_create(const NeuralModel *model,
             calloc(count, sizeof(**created->pre_activations));
         created->activations[layer_index] =
             calloc(count, sizeof(**created->activations));
+        created->activation_gradients[layer_index] =
+            calloc(count, sizeof(**created->activation_gradients));
+        created->pre_activation_gradients[layer_index] =
+            calloc(count, sizeof(**created->pre_activation_gradients));
         if (created->pre_activations[layer_index] == NULL ||
-            created->activations[layer_index] == NULL) {
+            created->activations[layer_index] == NULL ||
+            created->activation_gradients[layer_index] == NULL ||
+            created->pre_activation_gradients[layer_index] == NULL) {
             neural_error_set(error,
                              "unable to allocate workspace for layer %zu",
                              layer_index);
@@ -412,6 +415,22 @@ const neural_real *neural_workspace_layer_activations(
         *count = workspace->model->layers[layer_index].neuron_count;
     }
     return workspace->activations[layer_index];
+}
+
+const neural_real *neural_workspace_input_gradients(
+    const NeuralWorkspace *workspace,
+    size_t *count)
+{
+    if (count != NULL) {
+        *count = 0U;
+    }
+    if (workspace == NULL) {
+        return NULL;
+    }
+    if (count != NULL) {
+        *count = workspace->model->input_count;
+    }
+    return workspace->input_gradients;
 }
 
 int neural_model_forward(const NeuralModel *model,
