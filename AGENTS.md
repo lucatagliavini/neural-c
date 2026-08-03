@@ -44,3 +44,11 @@ Add tests with every behavior change and bug fix. Name test files after the unit
 History uses short imperative subjects. Keep commits focused (for example, `Add tensor allocation checks`). Pull requests should explain motivation, verification, and linked issues; attach logs or screenshots only when useful.
 
 Before changing model execution, training, or persistence, read `docs/model-runtime.md`, `docs/training-engine.md`, `docs/parallel-execution.md`, `docs/persistence-format.md`, `docs/training-resume.md`, and `docs/roadmap.md`. Preserve documented parameter layout, deterministic reduction order, and file ownership.
+
+## Session Handoffs
+
+Session summaries live in `sessions/` and use the name
+`YYYY-MM-DD-<progressive>.md`. At the start of a new session, read the latest
+file by lexicographic filename order before planning new work. Add the next
+progressive summary at the end of a session so completed work, validation,
+published commits, and the recommended next step remain recoverable.
