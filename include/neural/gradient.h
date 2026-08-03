@@ -26,6 +26,14 @@ neural_real *neural_gradient_layer_weights(NeuralGradient *gradient,
 neural_real *neural_gradient_layer_biases(NeuralGradient *gradient,
                                           size_t layer_index,
                                           size_t *count);
+const neural_real *neural_gradient_layer_weights_const(
+    const NeuralGradient *gradient,
+    size_t layer_index,
+    size_t *count);
+const neural_real *neural_gradient_layer_biases_const(
+    const NeuralGradient *gradient,
+    size_t layer_index,
+    size_t *count);
 
 int neural_gradient_reduce_ordered(
     NeuralGradient *destination,

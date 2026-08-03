@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <locale.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -67,6 +68,14 @@ static void test_core_contract(void)
           "SHA-256 text storage must include its terminator");
     check(NEURAL_DEFAULT_THREAD_COUNT >= 1U,
           "default execution thread count must be positive");
+    check(isfinite(NEURAL_DEFAULT_GRADIENT_CHECK_EPSILON) &&
+              NEURAL_DEFAULT_GRADIENT_CHECK_EPSILON > 0.0,
+          "default gradient-check epsilon must be positive and finite");
+    check(isfinite(NEURAL_DEFAULT_GRADIENT_CHECK_ABSOLUTE_TOLERANCE) &&
+              NEURAL_DEFAULT_GRADIENT_CHECK_ABSOLUTE_TOLERANCE >= 0.0 &&
+              isfinite(NEURAL_DEFAULT_GRADIENT_CHECK_RELATIVE_TOLERANCE) &&
+              NEURAL_DEFAULT_GRADIENT_CHECK_RELATIVE_TOLERANCE >= 0.0,
+          "default gradient-check tolerances must be finite and non-negative");
 }
 
 static void test_real_parser_locale_independence(void)

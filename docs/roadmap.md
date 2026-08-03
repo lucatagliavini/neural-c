@@ -15,9 +15,10 @@
 - **Milestone 4 — in progress:**
   - **4.1 — complete:** allocation-free single-sample backpropagation and
     workspace scratch buffers.
-  - **4.2 — next:** central finite-difference gradient checks.
-  - **4.3:** generic deterministic batch planning and accumulation; public
-    behavior remains full-batch.
+  - **4.2 — complete:** central finite-difference gradient checks with exact
+    parameter restoration and activation coverage.
+  - **4.3 — next:** generic deterministic batch planning and accumulation;
+    public behavior remains full-batch.
   - **4.4:** persistent pthread workers and bounded-memory execution waves.
   - **4.5:** coherent epoch loss reporting, fresh `train`, and atomic final
     weights.

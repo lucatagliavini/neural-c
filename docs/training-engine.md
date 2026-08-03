@@ -13,6 +13,21 @@ no forward or backward call allocates per sample. A single-sample operation
 runs forward, evaluates the configured loss, and fills a model-compatible
 `NeuralGradient` without changing model parameters.
 
+## Gradient Checking
+
+`neural_model_gradient_check` compares the analytic sample gradient with a
+central finite difference for every weight and bias. The perturbation is
+`epsilon * max(1, abs(parameter))`; the denominator uses the two representable
+perturbed values rather than assuming an exact `2 * epsilon`. A parameter
+passes when either its absolute or relative error is within tolerance.
+
+The checker requires exclusive mutable access to the model because it installs
+temporary parameter values. Every perturbation is restored before proceeding,
+including failure paths, so a completed or rejected check leaves parameters
+bit-identical. The supplied workspace is scratch and may change. Checks around
+non-differentiable points such as ReLU at zero are expected to fail and must use
+test fixtures whose perturbations remain on one differentiable branch.
+
 ## Batch Semantics
 
 The internal trainer accepts a positive resolved batch size. Milestone 4 uses

@@ -168,6 +168,40 @@ neural_real *neural_gradient_layer_biases(NeuralGradient *gradient,
     return gradient->layers[layer_index].biases;
 }
 
+const neural_real *neural_gradient_layer_weights_const(
+    const NeuralGradient *gradient,
+    size_t layer_index,
+    size_t *count)
+{
+    if (count != NULL) {
+        *count = 0U;
+    }
+    if (gradient == NULL || layer_index >= gradient->layer_count) {
+        return NULL;
+    }
+    if (count != NULL) {
+        *count = gradient->layers[layer_index].weight_count;
+    }
+    return gradient->layers[layer_index].weights;
+}
+
+const neural_real *neural_gradient_layer_biases_const(
+    const NeuralGradient *gradient,
+    size_t layer_index,
+    size_t *count)
+{
+    if (count != NULL) {
+        *count = 0U;
+    }
+    if (gradient == NULL || layer_index >= gradient->layer_count) {
+        return NULL;
+    }
+    if (count != NULL) {
+        *count = gradient->layers[layer_index].bias_count;
+    }
+    return gradient->layers[layer_index].biases;
+}
+
 int neural_gradient_copy(NeuralGradient *destination,
                          const NeuralGradient *source,
                          NeuralError *error)
