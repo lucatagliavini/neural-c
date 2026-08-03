@@ -75,5 +75,12 @@ int neural_activation_apply(const NeuralActivationSpec *spec,
                             neural_real *outputs,
                             size_t count,
                             NeuralError *error);
+int neural_activation_backward(const NeuralActivationSpec *spec,
+                               const neural_real *pre_activations,
+                               const neural_real *activations,
+                               const neural_real *output_gradients,
+                               neural_real *input_gradients,
+                               size_t count,
+                               NeuralError *error);
 
 #endif

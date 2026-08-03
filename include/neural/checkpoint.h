@@ -12,13 +12,22 @@ typedef enum {
 } NeuralOptimizer;
 
 typedef struct {
+    char model[NEURAL_SHA256_TEXT_CAPACITY];
+    char dataset[NEURAL_SHA256_TEXT_CAPACITY];
+    char training[NEURAL_SHA256_TEXT_CAPACITY];
+} NeuralProjectDigests;
+
+typedef struct {
+    size_t completed_epochs;
+    NeuralProjectDigests digests;
+} NeuralWeightsMetadata;
+
+typedef struct {
     size_t completed_epochs;
     size_t target_epochs;
     uint64_t rng_state;
     NeuralOptimizer optimizer;
-    char model_digest[NEURAL_SHA256_TEXT_CAPACITY];
-    char dataset_digest[NEURAL_SHA256_TEXT_CAPACITY];
-    char training_digest[NEURAL_SHA256_TEXT_CAPACITY];
+    NeuralProjectDigests digests;
 } NeuralCheckpointMetadata;
 
 #endif

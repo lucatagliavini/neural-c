@@ -52,6 +52,15 @@
 #define NEURAL_DEFAULT_CHECKPOINT_FILENAME "checkpoint.txt"
 #endif
 
+#ifndef NEURAL_DEFAULT_ATOMIC_TEMP_SUFFIX
+#define NEURAL_DEFAULT_ATOMIC_TEMP_SUFFIX ".tmp.XXXXXX"
+#endif
+
+/* Execution-only default; it is never part of project files or digests. */
+#ifndef NEURAL_DEFAULT_THREAD_COUNT
+#define NEURAL_DEFAULT_THREAD_COUNT 1U
+#endif
+
 /* Values materialized by `init`; runtime always reads project.conf. */
 #ifndef NEURAL_DEFAULT_INIT_EPOCHS
 #define NEURAL_DEFAULT_INIT_EPOCHS 10000U

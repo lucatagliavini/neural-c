@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "neural/dense.h"
 #include "neural/random.h"
 
 typedef struct {
@@ -225,6 +226,18 @@ uint64_t neural_model_random_state(const NeuralModel *model)
     return model == NULL ? UINT64_C(0) : model->random_state;
 }
 
+int neural_model_set_random_state(NeuralModel *model,
+                                  uint64_t state,
+                                  NeuralError *error)
+{
+    if (model == NULL) {
+        neural_error_set(error, "model is required to set random state");
+        return 0;
+    }
+    model->random_state = state;
+    return 1;
+}
+
 const neural_real *neural_model_layer_weights(const NeuralModel *model,
                                               size_t layer_index,
                                               size_t *count)
@@ -367,6 +380,40 @@ int neural_workspace_create(const NeuralModel *model,
     return 1;
 }
 
+const neural_real *neural_workspace_layer_pre_activations(
+    const NeuralWorkspace *workspace,
+    size_t layer_index,
+    size_t *count)
+{
+    if (count != NULL) {
+        *count = 0U;
+    }
+    if (workspace == NULL || layer_index >= workspace->layer_count) {
+        return NULL;
+    }
+    if (count != NULL) {
+        *count = workspace->model->layers[layer_index].neuron_count;
+    }
+    return workspace->pre_activations[layer_index];
+}
+
+const neural_real *neural_workspace_layer_activations(
+    const NeuralWorkspace *workspace,
+    size_t layer_index,
+    size_t *count)
+{
+    if (count != NULL) {
+        *count = 0U;
+    }
+    if (workspace == NULL || layer_index >= workspace->layer_count) {
+        return NULL;
+    }
+    if (count != NULL) {
+        *count = workspace->model->layers[layer_index].neuron_count;
+    }
+    return workspace->activations[layer_index];
+}
+
 int neural_model_forward(const NeuralModel *model,
                          NeuralWorkspace *workspace,
                          const neural_real *inputs,
@@ -402,32 +449,20 @@ int neural_model_forward(const NeuralModel *model,
         const NeuralRuntimeLayer *layer = &model->layers[layer_index];
         neural_real *pre_activations =
             workspace->pre_activations[layer_index];
-        size_t neuron_index;
-
         if (previous_count != layer->input_count) {
             neural_error_set(error, "runtime layer chain is inconsistent");
             return 0;
         }
-        for (neuron_index = 0U;
-             neuron_index < layer->neuron_count;
-             neuron_index++) {
-            neural_real sum = layer->biases[neuron_index];
-            size_t input_index;
-            size_t weight_offset = neuron_index * layer->input_count;
-
-            for (input_index = 0U;
-                 input_index < layer->input_count;
-                 input_index++) {
-                sum += layer->weights[weight_offset + input_index] *
-                       previous_values[input_index];
-            }
-            if (!isfinite(sum)) {
-                neural_error_set(error,
-                                 "pre-activation is not finite at layer %zu",
-                                 layer_index);
-                return 0;
-            }
-            pre_activations[neuron_index] = sum;
+        if (!neural_dense_forward(layer->weights,
+                                  layer->weight_count,
+                                  layer->biases,
+                                  layer->neuron_count,
+                                  previous_values,
+                                  previous_count,
+                                  pre_activations,
+                                  layer->neuron_count,
+                                  error)) {
+            return 0;
         }
         if (!neural_activation_apply(
                 &layer->activation,

@@ -397,3 +397,100 @@ int neural_activation_apply(const NeuralActivationSpec *spec,
     }
     return 1;
 }
+
+int neural_activation_backward(const NeuralActivationSpec *spec,
+                               const neural_real *pre_activations,
+                               const neural_real *activations,
+                               const neural_real *output_gradients,
+                               neural_real *input_gradients,
+                               size_t count,
+                               NeuralError *error)
+{
+    neural_real alpha = 0.0;
+    size_t index;
+
+    if (pre_activations == NULL || activations == NULL ||
+        output_gradients == NULL || input_gradients == NULL || count == 0U ||
+        !neural_activation_spec_validate(spec, error)) {
+        if (pre_activations == NULL || activations == NULL ||
+            output_gradients == NULL || input_gradients == NULL ||
+            count == 0U) {
+            neural_error_set(error, "invalid activation backward buffers");
+        }
+        return 0;
+    }
+    for (index = 0U; index < count; index++) {
+        if (!isfinite(pre_activations[index]) ||
+            !isfinite(activations[index]) ||
+            !isfinite(output_gradients[index])) {
+            neural_error_set(error,
+                             "activation backward values must be finite");
+            return 0;
+        }
+    }
+    if (spec->kind == NEURAL_ACTIVATION_SOFTMAX) {
+        neural_real dot_product = 0.0;
+
+        for (index = 0U; index < count; index++) {
+            dot_product += output_gradients[index] * activations[index];
+        }
+        if (!isfinite(dot_product)) {
+            neural_error_set(error,
+                             "softmax backward reduction is not finite");
+            return 0;
+        }
+        for (index = 0U; index < count; index++) {
+            input_gradients[index] =
+                activations[index] *
+                (output_gradients[index] - dot_product);
+            if (!isfinite(input_gradients[index])) {
+                neural_error_set(error,
+                                 "softmax input gradient is not finite");
+                return 0;
+            }
+        }
+        return 1;
+    }
+    if (spec->kind == NEURAL_ACTIVATION_LEAKY_RELU ||
+        spec->kind == NEURAL_ACTIVATION_ELU) {
+        (void)neural_activation_spec_parameter_value(
+            spec,
+            NEURAL_ACTIVATION_PARAMETER_ALPHA,
+            &alpha);
+    }
+    for (index = 0U; index < count; index++) {
+        neural_real derivative = 0.0;
+
+        switch (spec->kind) {
+        case NEURAL_ACTIVATION_LINEAR:
+            derivative = 1.0;
+            break;
+        case NEURAL_ACTIVATION_SIGMOID:
+            derivative = activations[index] * (1.0 - activations[index]);
+            break;
+        case NEURAL_ACTIVATION_TANH:
+            derivative = 1.0 - activations[index] * activations[index];
+            break;
+        case NEURAL_ACTIVATION_RELU:
+            derivative = pre_activations[index] > 0.0 ? 1.0 : 0.0;
+            break;
+        case NEURAL_ACTIVATION_LEAKY_RELU:
+            derivative = pre_activations[index] >= 0.0 ? 1.0 : alpha;
+            break;
+        case NEURAL_ACTIVATION_ELU:
+            derivative = pre_activations[index] >= 0.0
+                             ? 1.0
+                             : activations[index] + alpha;
+            break;
+        case NEURAL_ACTIVATION_SOFTMAX:
+            derivative = 0.0;
+            break;
+        }
+        input_gradients[index] = output_gradients[index] * derivative;
+        if (!isfinite(input_gradients[index])) {
+            neural_error_set(error, "activation input gradient is not finite");
+            return 0;
+        }
+    }
+    return 1;
+}

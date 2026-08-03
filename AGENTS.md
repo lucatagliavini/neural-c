@@ -22,6 +22,7 @@ Use the root `Makefile`:
 - `make test` — run the complete automated test suite.
 - `make test-defaults` — validate supported compile-time overrides.
 - `make test-sanitize` — run native tests with AddressSanitizer and UBSan.
+- `make test-thread-sanitize` — run concurrency tests with ThreadSanitizer when supported.
 - `make check` — run tests and validate the Bash launcher.
 - `make verify-binaries` — verify both generated ELF architectures.
 - `make clean` — remove generated build artifacts only.
@@ -40,6 +41,6 @@ Add tests with every behavior change and bug fix. Name test files after the unit
 
 ## Commit & Pull Request Guidelines
 
-No usable commit history exists. Use focused commits with imperative subjects, such as `Add tensor allocation checks`. Pull requests should explain motivation, verification, and linked issues; attach logs or screenshots only when useful.
+History uses short imperative subjects. Keep commits focused (for example, `Add tensor allocation checks`). Pull requests should explain motivation, verification, and linked issues; attach logs or screenshots only when useful.
 
-Before changing model execution, training, or persistence, read `docs/model-runtime.md`, `docs/training-resume.md`, and `docs/roadmap.md`. Preserve documented parameter layout and file ownership.
+Before changing model execution, training, or persistence, read `docs/model-runtime.md`, `docs/parallel-execution.md`, `docs/persistence-format.md`, `docs/training-resume.md`, and `docs/roadmap.md`. Preserve documented parameter layout, deterministic reduction order, and file ownership.

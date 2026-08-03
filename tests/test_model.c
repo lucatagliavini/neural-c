@@ -225,6 +225,8 @@ static void test_known_forward_pass(void)
     neural_real biases[] = {0.0};
     neural_real inputs[] = {2.0, 1.0};
     neural_real output;
+    const neural_real *stored_values;
+    size_t stored_count;
 
     check(neural_model_create(&spec, UINT64_C(1), &model, &error),
           "known forward model must be created");
@@ -252,6 +254,18 @@ static void test_known_forward_pass(void)
           "known forward pass must succeed");
     check(nearly_equal(output, 1.0 / (1.0 + exp(-1.0)), 1e-15),
           "known forward output must match sigmoid reference");
+    stored_values = neural_workspace_layer_pre_activations(workspace,
+                                                           0U,
+                                                           &stored_count);
+    check(stored_values != NULL && stored_count == 1U &&
+              stored_values[0] == 1.0,
+          "workspace must expose stored pre-activations read-only");
+    stored_values = neural_workspace_layer_activations(workspace,
+                                                       0U,
+                                                       &stored_count);
+    check(stored_values != NULL && stored_count == 1U &&
+              stored_values[0] == output,
+          "workspace must expose stored activations read-only");
     check(!neural_model_forward(model,
                                 workspace,
                                 inputs,

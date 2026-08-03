@@ -41,6 +41,12 @@ grep -q '^dense 1 tanh$' "$project_dir/model.txt"
 grep -q '^epochs 10000$' "$project_dir/project.conf"
 grep -q '^learning_rate 0.5$' "$project_dir/project.conf"
 grep -q '^checkpoint_interval 100$' "$project_dir/project.conf"
+! grep -q 'threads' "$project_dir/project.conf"
+
+inspect_output=$("$executable" inspect projects/xor)
+grep -Eq '^Model digest: sha256:[0-9a-f]{64}$' <<<"$inspect_output"
+grep -Eq '^Dataset digest: sha256:[0-9a-f]{64}$' <<<"$inspect_output"
+grep -Eq '^Training digest: sha256:[0-9a-f]{64}$' <<<"$inspect_output"
 
 set +e
 resume_output=$("$executable" train "$project_dir" --resume 2>&1)
@@ -58,6 +64,29 @@ set -e
 [[ $additional_status -eq 3 ]]
 grep -q "training mode 'additional' is not implemented yet" \
     <<<"$additional_output"
+
+set +e
+threads_output=$("$executable" train "$project_dir" --threads 4 2>&1)
+threads_status=$?
+set -e
+[[ $threads_status -eq 3 ]]
+grep -q 'threads: 4' <<<"$threads_output"
+
+set +e
+invalid_threads_output=$("$executable" train "$project_dir" --threads 0 2>&1)
+invalid_threads_status=$?
+set -e
+[[ $invalid_threads_status -eq 2 ]]
+grep -q 'thread count must be a positive integer' <<<"$invalid_threads_output"
+
+set +e
+predict_threads_output=$(
+    "$executable" predict "$project_dir" 0 --threads 2 2>&1
+)
+predict_threads_status=$?
+set -e
+[[ $predict_threads_status -eq 3 ]]
+grep -q 'threads: 2' <<<"$predict_threads_output"
 
 set +e
 conflict_output=$(

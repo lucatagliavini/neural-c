@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <float.h>
 #include <inttypes.h>
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -281,6 +282,9 @@ int neural_project_initialize(const char *directory,
     int directory_exists;
     size_t index;
     int success = 0;
+    locale_t c_numeric_locale = (locale_t)0;
+    locale_t previous_locale = (locale_t)0;
+    int locale_active = 0;
 
     neural_error_clear(error);
     if (directory == NULL || directory[0] == '\0') {
@@ -327,6 +331,23 @@ int neural_project_initialize(const char *directory,
     if (!prepare_paths(directory, files, error)) {
         goto cleanup;
     }
+    c_numeric_locale = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+    if (c_numeric_locale == (locale_t)0) {
+        neural_error_set(error,
+                         "%s: unable to create numeric locale: %s",
+                         directory,
+                         strerror(errno));
+        goto cleanup;
+    }
+    previous_locale = uselocale(c_numeric_locale);
+    if (previous_locale == (locale_t)0) {
+        neural_error_set(error,
+                         "%s: unable to select numeric locale: %s",
+                         directory,
+                         strerror(errno));
+        goto cleanup;
+    }
+    locale_active = 1;
     for (index = 0U; index < MANAGED_WEIGHTS; index++) {
         if (!write_new_file(&files[index],
                             (enum managed_file_index)index,
@@ -336,6 +357,19 @@ int neural_project_initialize(const char *directory,
             goto cleanup;
         }
     }
+    if (uselocale(previous_locale) == (locale_t)0) {
+        locale_active = 0;
+        /* The C locale may still be active, so it must remain allocated. */
+        c_numeric_locale = (locale_t)0;
+        neural_error_set(error,
+                         "%s: unable to restore numeric locale: %s",
+                         directory,
+                         strerror(errno));
+        goto cleanup;
+    }
+    locale_active = 0;
+    freelocale(c_numeric_locale);
+    c_numeric_locale = (locale_t)0;
 
     for (index = 0U; index < MANAGED_FILE_COUNT; index++) {
         if (files[index].has_original &&
@@ -369,6 +403,15 @@ int neural_project_initialize(const char *directory,
     success = 1;
 
 cleanup:
+    if (locale_active) {
+        if (uselocale(previous_locale) == (locale_t)0) {
+            /* Do not free a locale that may still be active. */
+            c_numeric_locale = (locale_t)0;
+        }
+    }
+    if (c_numeric_locale != (locale_t)0) {
+        freelocale(c_numeric_locale);
+    }
     remove_new_files(files);
     free_managed_files(files);
     if (!success && directory_created) {

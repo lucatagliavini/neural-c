@@ -1,8 +1,9 @@
 # Training Continuation Architecture
 
-This document is authoritative for future training and persistence work. The
-CLI and public request types are present; weight and checkpoint payload I/O is
-not implemented yet.
+This document is authoritative for future training and continuation work. The
+CLI, public request types, canonical digests, and atomic persistence I/O are
+present; the training engine will integrate them in Milestones 4 and 5. The
+exact payload grammar is defined in `persistence-format.md`.
 
 ## File Responsibilities
 
@@ -28,9 +29,9 @@ Interrupted partial epochs are discarded and repeated. If both persistence
 files remain after an interrupted finalization, resume validates both and
 finishes the commit; refinement must refuse while a checkpoint exists.
 
-## Planned Text Metadata
+## Text Metadata
 
-The checkpoint header and metadata will have this shape before the layer
+The checkpoint header and metadata have this shape before the layer
 payload defined from the row-major layout in `model-runtime.md`:
 
 ```text
@@ -44,14 +45,18 @@ optimizer gradient_descent
 rng_state 123456789
 ```
 
-`weights.txt` uses `neural-c weights 1`, includes the model digest and training
-provenance, but excludes transient optimizer state. Floating-point values must
-use enough decimal digits to round-trip a `double`.
+`weights.txt` uses `neural-c weights 1`, includes all three provenance digests
+and the completed epoch count, but excludes transient optimizer and RNG state.
+Floating-point values use `DBL_DECIMAL_DIG` digits to round-trip exactly.
 
 Resume must reject unsupported versions, malformed or non-finite values,
 dimension mismatches, digest mismatches, unknown optimizers, and completed
 epochs greater than the target. Digests cover canonical parsed content rather
 than raw whitespace, so comments and formatting do not invalidate state.
+
+Thread count is deliberately absent from checkpoint metadata. Resume may use a
+different worker count because logical sample tasks and gradient reduction
+remain ordered as specified in `parallel-execution.md`.
 
 ## Checkpoint Lifecycle
 

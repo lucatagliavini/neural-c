@@ -6,8 +6,10 @@
 
 #include "neural/cli_options.h"
 #include "neural/defaults.h"
+#include "neural/digest.h"
 #include "neural/init.h"
 #include "neural/model.h"
+#include "neural/parallel.h"
 #include "neural/parse.h"
 #include "neural/project.h"
 #include "neural/training.h"
@@ -32,6 +34,7 @@ enum option_index {
     OPTION_CHECKPOINT_INTERVAL,
     OPTION_RESUME,
     OPTION_ADDITIONAL_EPOCHS,
+    OPTION_THREADS,
     OPTION_COUNT
 };
 
@@ -47,7 +50,8 @@ static const NeuralOptionDefinition option_definitions[OPTION_COUNT] = {
     {"loss", '\0', NEURAL_OPTION_VALUE, 0},
     {"checkpoint-interval", '\0', NEURAL_OPTION_VALUE, 0},
     {"resume", '\0', NEURAL_OPTION_FLAG, 0},
-    {"additional-epochs", '\0', NEURAL_OPTION_VALUE, 0}
+    {"additional-epochs", '\0', NEURAL_OPTION_VALUE, 0},
+    {"threads", 'j', NEURAL_OPTION_VALUE, 0}
 };
 
 static void print_usage(FILE *stream)
@@ -70,7 +74,9 @@ static void print_usage(FILE *stream)
             "      --checkpoint-interval N Default: %zu\n"
             "\nTraining continuation:\n"
             "      --resume                Resume checkpoint.txt\n"
-            "      --additional-epochs N  Refine weights.txt\n",
+            "      --additional-epochs N  Refine weights.txt\n"
+            "\nExecution options:\n"
+            "  -j, --threads N            Worker threads; default: %zu\n",
             neural_name(),
             neural_name(),
             neural_name(),
@@ -81,7 +87,8 @@ static void print_usage(FILE *stream)
             (double)NEURAL_DEFAULT_INIT_LEARNING_RATE,
             (uint64_t)NEURAL_DEFAULT_INIT_SEED,
             NEURAL_DEFAULT_INIT_LOSS,
-            (size_t)NEURAL_DEFAULT_INIT_CHECKPOINT_INTERVAL);
+            (size_t)NEURAL_DEFAULT_INIT_CHECKPOINT_INTERVAL,
+            (size_t)NEURAL_DEFAULT_THREAD_COUNT);
 }
 
 static int parse_layer_option(const char *text,
@@ -322,6 +329,7 @@ static int command_train(const char *directory,
                          const NeuralParsedOptions *options)
 {
     NeuralTrainingRequest request = {NEURAL_TRAIN_FRESH, 0U};
+    NeuralExecutionConfig execution = {NEURAL_DEFAULT_THREAD_COUNT};
     NeuralError error;
 
     if (neural_option_is_present(options, OPTION_RESUME) &&
@@ -348,27 +356,55 @@ static int command_train(const char *directory,
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
         return EXIT_USAGE;
     }
+    if (neural_option_is_present(options, OPTION_THREADS) &&
+        !neural_parse_size(neural_option_value(options, OPTION_THREADS),
+                           &execution.thread_count)) {
+        fprintf(stderr, "%s: threads must be a positive integer\n", neural_name());
+        return EXIT_USAGE;
+    }
+    if (!neural_execution_config_validate(&execution, &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        return EXIT_USAGE;
+    }
     fprintf(stderr,
-            "%s: training mode '%s' is not implemented yet (project: %s)\n",
+            "%s: training mode '%s' is not implemented yet "
+            "(project: %s, threads: %zu)\n",
             neural_name(),
             neural_training_mode_name(request.mode),
-            directory);
+            directory,
+            execution.thread_count);
     return EXIT_NOT_IMPLEMENTED;
 }
 
-static int command_not_implemented(const char *command, const char *project)
+static int command_predict(const char *project,
+                           const NeuralParsedOptions *options)
 {
+    NeuralExecutionConfig execution = {NEURAL_DEFAULT_THREAD_COUNT};
+    NeuralError error;
+
+    if (neural_option_is_present(options, OPTION_THREADS) &&
+        !neural_parse_size(neural_option_value(options, OPTION_THREADS),
+                           &execution.thread_count)) {
+        fprintf(stderr, "%s: threads must be a positive integer\n", neural_name());
+        return EXIT_USAGE;
+    }
+    if (!neural_execution_config_validate(&execution, &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        return EXIT_USAGE;
+    }
     fprintf(stderr,
-            "%s: '%s' is not implemented yet (project: %s)\n",
+            "%s: 'predict' is not implemented yet "
+            "(project: %s, threads: %zu)\n",
             neural_name(),
-            command,
-            project);
+            project,
+            execution.thread_count);
     return EXIT_NOT_IMPLEMENTED;
 }
 
 static int command_inspect(const char *directory)
 {
     NeuralProject project;
+    NeuralProjectDigests digests;
     NeuralModel *runtime_model = NULL;
     NeuralError error;
     size_t layer_index;
@@ -383,6 +419,12 @@ static int command_inspect(const char *directory)
                              &runtime_model,
                              &error)) {
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        neural_project_free(&project);
+        return EXIT_USAGE;
+    }
+    if (!neural_project_digests_compute(&project, &digests, &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        neural_model_free(runtime_model);
         neural_project_free(&project);
         return EXIT_USAGE;
     }
@@ -429,6 +471,9 @@ static int command_inspect(const char *directory)
     printf("Seed: %" PRIu64 "\n", project.training.seed);
     printf("Checkpoint interval: %zu\n",
            project.training.checkpoint_interval);
+    printf("Model digest: sha256:%s\n", digests.model);
+    printf("Dataset digest: sha256:%s\n", digests.dataset);
+    printf("Training digest: sha256:%s\n", digests.training);
     puts("Validation: OK");
 
     neural_model_free(runtime_model);
@@ -484,7 +529,7 @@ int main(int argc, char **argv)
                                  OPTION_RESUME,
                                  OPTION_COUNT)) {
             fprintf(stderr,
-                    "%s: training continuation options are invalid with init\n",
+                    "%s: training and execution options are invalid with init\n",
                     neural_name());
             neural_options_free(&options);
             return EXIT_USAGE;
@@ -515,7 +560,8 @@ int main(int argc, char **argv)
         neural_options_free(&options);
         return result;
     }
-    if (has_options_in_range(&options, OPTION_RESUME, OPTION_COUNT)) {
+    if (neural_option_is_present(&options, OPTION_RESUME) ||
+        neural_option_is_present(&options, OPTION_ADDITIONAL_EPOCHS)) {
         fprintf(stderr,
                 "%s: training continuation options are valid only with train\n",
                 neural_name());
@@ -524,6 +570,13 @@ int main(int argc, char **argv)
     }
     if (strcmp(command, "inspect") == 0) {
         int result;
+        if (neural_option_is_present(&options, OPTION_THREADS)) {
+            fprintf(stderr,
+                    "%s: --threads is valid only with train or predict\n",
+                    neural_name());
+            neural_options_free(&options);
+            return EXIT_USAGE;
+        }
         if (options.positional_count != 2U) {
             fprintf(stderr,
                     "%s: inspect requires one project directory\n",
@@ -536,7 +589,7 @@ int main(int argc, char **argv)
         return result;
     }
     if (strcmp(command, "predict") == 0) {
-        int result = command_not_implemented(command, options.positionals[1]);
+        int result = command_predict(options.positionals[1], &options);
         neural_options_free(&options);
         return result;
     }

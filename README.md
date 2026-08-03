@@ -13,6 +13,10 @@ specified in [`docs/training-resume.md`](docs/training-resume.md), and current
 milestone status is tracked in [`docs/roadmap.md`](docs/roadmap.md).
 Runtime layout and activation rules are defined in
 [`docs/model-runtime.md`](docs/model-runtime.md).
+Weights, checkpoints, and canonical digests are defined in
+[`docs/persistence-format.md`](docs/persistence-format.md).
+Thread ownership and deterministic reduction are defined in
+[`docs/parallel-execution.md`](docs/parallel-execution.md).
 
 ## Project format
 
@@ -45,6 +49,7 @@ comments are accepted; unknown or duplicate properties are rejected.
 make build-native
 make build-ppc64le
 make test
+make test-thread-sanitize
 make verify-binaries
 ```
 
@@ -79,6 +84,14 @@ The CLI reserves two validated, mutually exclusive training modes:
 Their execution will be implemented with the training engine. Resume will use
 the singular `checkpoint.txt`; refinement will start from final `weights.txt`.
 The generated `checkpoint_interval` setting controls future periodic saves.
+Versioned parsers, exact `double` round trips, SHA-256 compatibility checks,
+and atomic replacement are already implemented for both persistence files.
+
+`train` and `predict` accept execution-only `-j N` or `--threads N`. The value
+defaults to 1 and is intentionally excluded from project files, digests, and
+checkpoints. Parallel forward execution already supports a shared read-only
+model with one private worker context per thread; full parallel training will
+be composed in the next milestone.
 
 Run the architecture-appropriate executable through the launcher:
 
@@ -87,7 +100,8 @@ Run the architecture-appropriate executable through the launcher:
 ./neural-c.sh inspect projects/xor
 ```
 
-`inspect` loads and validates the complete project. `train` and `predict` are
-present in the CLI but will be implemented in later milestones. The reusable
-option parser supports `--option value`, `--option=value`, short options, and
-`--` before positional values that begin with `-`.
+`inspect` loads and validates the complete project and prints its canonical
+model, dataset, and training SHA-256 digests. `train` and `predict` are present
+in the CLI but will be implemented in later milestones. The reusable option
+parser supports `--option value`, `--option=value`, short options, and `--`
+before positional values that begin with `-`.

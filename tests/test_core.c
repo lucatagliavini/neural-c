@@ -58,8 +58,15 @@ static void test_core_contract(void)
           "default model filename must match the project convention");
     check(strcmp(NEURAL_DEFAULT_CHECKPOINT_FILENAME, "checkpoint.txt") == 0,
           "default checkpoint filename must match the persistence convention");
+    check(strlen(NEURAL_DEFAULT_ATOMIC_TEMP_SUFFIX) >= 6U &&
+              strcmp(NEURAL_DEFAULT_ATOMIC_TEMP_SUFFIX +
+                         strlen(NEURAL_DEFAULT_ATOMIC_TEMP_SUFFIX) - 6U,
+                     "XXXXXX") == 0,
+          "atomic temporary suffix must provide a mkstemp template");
     check(NEURAL_SHA256_TEXT_CAPACITY == 65U,
           "SHA-256 text storage must include its terminator");
+    check(NEURAL_DEFAULT_THREAD_COUNT >= 1U,
+          "default execution thread count must be positive");
 }
 
 static void test_real_parser_locale_independence(void)

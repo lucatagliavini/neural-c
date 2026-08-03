@@ -26,6 +26,9 @@ size_t neural_model_layer_input_count(const NeuralModel *model,
 size_t neural_model_layer_neuron_count(const NeuralModel *model,
                                        size_t layer_index);
 uint64_t neural_model_random_state(const NeuralModel *model);
+int neural_model_set_random_state(NeuralModel *model,
+                                  uint64_t state,
+                                  NeuralError *error);
 
 const neural_real *neural_model_layer_weights(const NeuralModel *model,
                                               size_t layer_index,
@@ -45,6 +48,14 @@ int neural_workspace_create(const NeuralModel *model,
                             NeuralWorkspace **workspace,
                             NeuralError *error);
 void neural_workspace_free(NeuralWorkspace *workspace);
+const neural_real *neural_workspace_layer_pre_activations(
+    const NeuralWorkspace *workspace,
+    size_t layer_index,
+    size_t *count);
+const neural_real *neural_workspace_layer_activations(
+    const NeuralWorkspace *workspace,
+    size_t layer_index,
+    size_t *count);
 
 int neural_model_forward(const NeuralModel *model,
                          NeuralWorkspace *workspace,

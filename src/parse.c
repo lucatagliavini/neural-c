@@ -9,6 +9,15 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <threads.h>
+
+static once_flag numeric_locale_once = ONCE_FLAG_INIT;
+static locale_t c_numeric_locale = (locale_t)0;
+
+static void initialize_numeric_locale(void)
+{
+    c_numeric_locale = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+}
 
 int neural_parse_size(const char *text, size_t *value)
 {
@@ -88,19 +97,17 @@ static int has_decimal_syntax(const char *text)
 int neural_parse_real(const char *text, neural_real *value)
 {
     char *end;
-    locale_t c_numeric_locale;
     double parsed;
 
     if (text == NULL || value == NULL || !has_decimal_syntax(text)) {
         return 0;
     }
-    c_numeric_locale = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+    call_once(&numeric_locale_once, initialize_numeric_locale);
     if (c_numeric_locale == (locale_t)0) {
         return 0;
     }
     errno = 0;
     parsed = strtod_l(text, &end, c_numeric_locale);
-    freelocale(c_numeric_locale);
     if (errno == ERANGE || *end != '\0' || !isfinite(parsed)) {
         return 0;
     }

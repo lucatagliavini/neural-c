@@ -17,11 +17,19 @@ and is validated completely before execution.
 
 Real numbers use locale-independent ASCII decimal syntax: `.` is the decimal
 separator and `e` or `E` introduces an optional base-10 exponent. Readers must
-not interpret numbers according to the process locale.
+not interpret numbers according to the process locale, and writers must not
+emit locale-specific separators.
 
 Dense layers use the activation grammar documented in `model-runtime.md`.
 Activation parameters belong only in `model.txt` and are covered by model
 digests; weights and checkpoints must not duplicate them.
+The version 1 persistence grammar, digest encoding, and atomic-write contract
+are authoritative in `persistence-format.md`.
+
+Thread count is execution-only configuration supplied by `--threads`; it must
+not appear in project files, digests, weights, or checkpoints. Parallel code
+must follow `parallel-execution.md` and preserve the documented deterministic
+sample order.
 
 ## Defaults and Constants
 
