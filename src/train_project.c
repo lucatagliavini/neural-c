@@ -3,6 +3,7 @@
 #include "train_project.h"
 
 #include <errno.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -289,7 +290,8 @@ int neural_project_train_resume_controlled(
                                 error)) {
         goto cleanup;
     }
-    if (checkpoint_metadata.target_epochs != project.training.epochs) {
+    if (!weights_exists &&
+        checkpoint_metadata.target_epochs != project.training.epochs) {
         neural_error_set(error,
                          "checkpoint target %zu does not match configured epochs %zu",
                          checkpoint_metadata.target_epochs,
@@ -308,24 +310,35 @@ int neural_project_train_resume_controlled(
                                  error)) {
             goto cleanup;
         }
-        if (weights_metadata.completed_epochs !=
+        if (weights_metadata.completed_epochs < project.training.epochs) {
+            neural_error_set(
+                error,
+                "final weights epochs %zu precede configured epochs %zu",
+                weights_metadata.completed_epochs,
+                project.training.epochs);
+            goto cleanup;
+        }
+        if (weights_metadata.completed_epochs >
             checkpoint_metadata.target_epochs) {
             neural_error_set(
                 error,
-                "final weights epochs %zu do not match checkpoint target %zu",
+                "final weights epochs %zu exceed checkpoint target %zu",
                 weights_metadata.completed_epochs,
                 checkpoint_metadata.target_epochs);
             goto cleanup;
         }
-        if (checkpoint_metadata.completed_epochs ==
-                checkpoint_metadata.target_epochs &&
-            !models_have_equal_parameters(checkpoint_model, weights_model)) {
-            neural_error_set(
-                error,
-                "completed checkpoint parameters do not match final weights");
-            goto cleanup;
-        }
-        if (!neural_model_train_full_batch_range(
+        if (weights_metadata.completed_epochs ==
+            checkpoint_metadata.target_epochs) {
+            if (checkpoint_metadata.completed_epochs ==
+                    checkpoint_metadata.target_epochs &&
+                !models_have_equal_parameters(checkpoint_model,
+                                               weights_model)) {
+                neural_error_set(
+                    error,
+                    "completed checkpoint parameters do not match final weights");
+                goto cleanup;
+            }
+            if (!neural_model_train_full_batch_range(
                 weights_model,
                 &project.dataset,
                 &project.training,
@@ -336,12 +349,30 @@ int neural_project_train_resume_controlled(
                 NULL,
                 &completed,
                 error) ||
-            !neural_atomic_file_remove(checkpoint_path, 0, error)) {
+                !neural_atomic_file_remove(checkpoint_path, 0, error)) {
+                goto cleanup;
+            }
+            *result = completed;
+            success = 1;
             goto cleanup;
         }
-        *result = completed;
-        success = 1;
-        goto cleanup;
+        if (checkpoint_metadata.completed_epochs <
+            weights_metadata.completed_epochs) {
+            neural_error_set(
+                error,
+                "checkpoint epochs %zu precede refinement baseline %zu",
+                checkpoint_metadata.completed_epochs,
+                weights_metadata.completed_epochs);
+            goto cleanup;
+        }
+        if (checkpoint_metadata.completed_epochs ==
+                weights_metadata.completed_epochs &&
+            !models_have_equal_parameters(checkpoint_model, weights_model)) {
+            neural_error_set(
+                error,
+                "refinement checkpoint parameters do not match baseline weights");
+            goto cleanup;
+        }
     }
     if (!neural_project_checkpoint_observer_initialize(
             &checkpoint_observer,
@@ -366,7 +397,8 @@ int neural_project_train_resume_controlled(
             &checkpoint_observer,
             &completed,
             error) ||
-        !persistence_path_is_absent(weights_path, error)) {
+        (!weights_exists &&
+         !persistence_path_is_absent(weights_path, error))) {
         goto cleanup;
     }
     final_metadata.completed_epochs = completed.completed_epochs;
@@ -407,4 +439,163 @@ int neural_project_train_resume(const char *directory,
                                                   NULL,
                                                   result,
                                                   error);
+}
+
+int neural_project_train_additional_controlled(
+    const char *directory,
+    const NeuralExecutionConfig *execution,
+    size_t additional_epochs,
+    const volatile sig_atomic_t *stop_request,
+    int *interrupted_signal,
+    NeuralTrainingResult *result,
+    NeuralError *error)
+{
+    NeuralProject project;
+    NeuralProjectDigests digests;
+    NeuralWeightsMetadata weights_metadata;
+    NeuralWeightsMetadata final_metadata;
+    NeuralProjectCheckpointObserver checkpoint_observer = {0};
+    NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
+    NeuralTrainingResult completed = {0U, 0U, 0.0};
+    NeuralModel *model = NULL;
+    char *weights_path = NULL;
+    char *checkpoint_path = NULL;
+    size_t target_epochs;
+    int checkpoint_exists = 0;
+    int weights_exists = 0;
+    int project_loaded = 0;
+    int success = 0;
+
+    neural_error_clear(error);
+    if (directory == NULL || directory[0] == '\0' || execution == NULL ||
+        additional_epochs == 0U || result == NULL) {
+        neural_error_set(error,
+                         "additional project training arguments are required");
+        return 0;
+    }
+    *result = completed;
+    if (interrupted_signal != NULL) {
+        *interrupted_signal = 0;
+    }
+    weights_path = neural_path_join(directory,
+                                    NEURAL_DEFAULT_WEIGHTS_FILENAME,
+                                    error);
+    checkpoint_path = neural_path_join(directory,
+                                       NEURAL_DEFAULT_CHECKPOINT_FILENAME,
+                                       error);
+    if (weights_path == NULL || checkpoint_path == NULL ||
+        !neural_project_lock_acquire(directory,
+                                     NEURAL_PROJECT_LOCK_EXCLUSIVE,
+                                     &project_lock,
+                                     error) ||
+        !persistence_path_exists(checkpoint_path,
+                                 &checkpoint_exists,
+                                 error) ||
+        !persistence_path_exists(weights_path, &weights_exists, error)) {
+        goto cleanup;
+    }
+    if (checkpoint_exists) {
+        neural_error_set(error,
+                         "additional training requires no checkpoint.txt; "
+                         "use --resume");
+        goto cleanup;
+    }
+    if (!weights_exists) {
+        neural_error_set(error,
+                         "additional training requires finalized weights.txt");
+        goto cleanup;
+    }
+    if (!neural_project_load(directory, &project, error)) {
+        goto cleanup;
+    }
+    project_loaded = 1;
+    if (!neural_project_digests_compute(&project, &digests, error) ||
+        !neural_model_create(&project.model,
+                             project.training.seed,
+                             &model,
+                             error) ||
+        !neural_weights_load(weights_path,
+                             model,
+                             &digests,
+                             &weights_metadata,
+                             error)) {
+        goto cleanup;
+    }
+    if (weights_metadata.completed_epochs < project.training.epochs) {
+        neural_error_set(error,
+                         "final weights epochs %zu precede configured epochs %zu",
+                         weights_metadata.completed_epochs,
+                         project.training.epochs);
+        goto cleanup;
+    }
+    if (additional_epochs > SIZE_MAX - weights_metadata.completed_epochs) {
+        neural_error_set(error,
+                         "additional epoch target exceeds supported range");
+        goto cleanup;
+    }
+    target_epochs = weights_metadata.completed_epochs + additional_epochs;
+    if (!neural_project_checkpoint_observer_initialize(
+            &checkpoint_observer,
+            checkpoint_path,
+            model,
+            &digests,
+            project.training.checkpoint_interval,
+            target_epochs,
+            error)) {
+        goto cleanup;
+    }
+    neural_project_checkpoint_observer_set_stop_request(&checkpoint_observer,
+                                                        stop_request);
+    if (!neural_model_train_full_batch_range(
+            model,
+            &project.dataset,
+            &project.training,
+            execution,
+            weights_metadata.completed_epochs,
+            target_epochs,
+            neural_project_checkpoint_observe,
+            &checkpoint_observer,
+            &completed,
+            error)) {
+        goto cleanup;
+    }
+    final_metadata.completed_epochs = completed.completed_epochs;
+    final_metadata.digests = digests;
+    if (!neural_weights_save_atomic(weights_path,
+                                    model,
+                                    &final_metadata,
+                                    error) ||
+        !neural_atomic_file_remove(checkpoint_path, 1, error)) {
+        goto cleanup;
+    }
+    *result = completed;
+    success = 1;
+
+cleanup:
+    if (interrupted_signal != NULL) {
+        *interrupted_signal = checkpoint_observer.interrupted_signal;
+    }
+    neural_project_lock_release(&project_lock);
+    neural_model_free(model);
+    if (project_loaded) {
+        neural_project_free(&project);
+    }
+    free(checkpoint_path);
+    free(weights_path);
+    return success;
+}
+
+int neural_project_train_additional(const char *directory,
+                                    const NeuralExecutionConfig *execution,
+                                    size_t additional_epochs,
+                                    NeuralTrainingResult *result,
+                                    NeuralError *error)
+{
+    return neural_project_train_additional_controlled(directory,
+                                                      execution,
+                                                      additional_epochs,
+                                                      NULL,
+                                                      NULL,
+                                                      result,
+                                                      error);
 }

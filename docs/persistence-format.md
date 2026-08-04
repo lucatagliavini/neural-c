@@ -19,6 +19,9 @@ completed_epochs <non-negative integer>
 lines followed by `target_epochs`, `optimizer gradient_descent`, and
 `rng_state`. The target must be positive and not smaller than the completed
 epoch count. The saved RNG state must equal the runtime model state.
+Epoch counts are cumulative: refined weights may exceed the configured fresh
+epoch count, and an active refinement checkpoint may target a larger absolute
+count while the previous finalized weights remain beside it.
 
 The payload then contains every layer in zero-based order:
 

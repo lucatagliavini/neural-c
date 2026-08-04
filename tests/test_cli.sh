@@ -30,6 +30,7 @@ cleanup() {
         "$interrupt_dir/project.conf" \
         "$interrupt_dir/train.txt" \
         "$interrupt_dir/weights.txt" \
+        "$interrupt_dir/weights.before" \
         "$interrupt_dir/checkpoint.txt" \
         "$interrupt_dir/.neural-c.lock" \
         "$interrupt_dir/stdout.txt" \
@@ -133,9 +134,8 @@ additional_output=$(
 )
 additional_status=$?
 set -e
-[[ $additional_status -eq 3 ]]
-grep -q "training mode 'additional' is not implemented yet" \
-    <<<"$additional_output"
+[[ $additional_status -eq 1 ]]
+grep -q 'requires finalized weights.txt' <<<"$additional_output"
 
 set +e
 invalid_threads_output=$("$executable" train "$project_dir" --threads 0 2>&1)
@@ -176,6 +176,15 @@ set -e
 [[ $busy_training_status -eq 1 ]]
 grep -q 'project is busy' <<<"$busy_training_output"
 [[ ! -e "$training_dir/weights.txt" ]]
+
+set +e
+busy_additional_output=$(
+    "$executable" train "$training_dir" --additional-epochs 2 2>&1
+)
+busy_additional_status=$?
+set -e
+[[ $busy_additional_status -eq 1 ]]
+grep -q 'project is busy' <<<"$busy_additional_output"
 
 mkdir -p "$interrupt_dir"
 cp projects/xor/model.txt "$interrupt_dir/model.txt"
@@ -230,6 +239,34 @@ grep -q '^Training complete: 10000 epochs, loss ' \
     <<<"$resume_after_signal_output"
 [[ -e "$interrupt_dir/weights.txt" ]]
 [[ ! -e "$interrupt_dir/checkpoint.txt" ]]
+
+cp "$interrupt_dir/weights.txt" "$interrupt_dir/weights.before"
+"$executable" train "$interrupt_dir" --additional-epochs 10000 --threads 4 \
+    >"$interrupt_dir/stdout.txt" 2>"$interrupt_dir/stderr.txt" &
+refinement_pid=$!
+wait_for_training_lock "$interrupt_dir" "$refinement_pid"
+kill -INT "$refinement_pid"
+set +e
+wait "$refinement_pid"
+refinement_status=$?
+set -e
+[[ $refinement_status -eq 130 ]]
+grep -q 'checkpoint saved' "$interrupt_dir/stderr.txt"
+cmp "$interrupt_dir/weights.before" "$interrupt_dir/weights.txt"
+grep -q '^target_epochs 20000$' "$interrupt_dir/checkpoint.txt"
+refinement_epoch=$(
+    awk '$1 == "completed_epochs" { print $2 }' \
+        "$interrupt_dir/checkpoint.txt"
+)
+((refinement_epoch > 10000 && refinement_epoch < 20000))
+
+refinement_resume_output=$(
+    "$executable" train "$interrupt_dir" --resume --threads 2
+)
+grep -q '^Training complete: 20000 epochs, loss ' \
+    <<<"$refinement_resume_output"
+grep -q '^completed_epochs 20000$' "$interrupt_dir/weights.txt"
+[[ ! -e "$interrupt_dir/checkpoint.txt" ]]
 [[ ! -e "$training_dir/checkpoint.txt" ]]
 flock -u "$training_lock_fd"
 exec {training_lock_fd}>&-
@@ -239,6 +276,15 @@ grep -q '^Training complete: 10000 epochs, loss ' <<<"$training_output"
 grep -q ', workers 4$' <<<"$training_output"
 grep -q '^neural-c weights 1$' "$training_dir/weights.txt"
 grep -q '^completed_epochs 10000$' "$training_dir/weights.txt"
+[[ ! -e "$training_dir/checkpoint.txt" ]]
+
+additional_training_output=$(
+    "$executable" train "$training_dir" --additional-epochs 2 --threads 2
+)
+grep -q '^Training complete: 10002 epochs, loss ' \
+    <<<"$additional_training_output"
+grep -q ', workers 2$' <<<"$additional_training_output"
+grep -q '^completed_epochs 10002$' "$training_dir/weights.txt"
 [[ ! -e "$training_dir/checkpoint.txt" ]]
 
 cp "$training_dir/weights.txt" "$training_dir/weights.before"

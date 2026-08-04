@@ -34,8 +34,10 @@ project state and retain it through their last persistence transition:
 - Fresh training holds it across initial state checks, all epochs, periodic
   checkpoints, final weights installation, and checkpoint removal.
 - Resume follows the same rule through checkpoint validation, continuation, or
-  interrupted-finalization reconciliation. Additional-epoch training will do
-  likewise.
+  interrupted-finalization reconciliation.
+- Additional-epoch training holds it while validating baseline weights,
+  running all further epochs, installing any recovery checkpoints, replacing
+  final weights, and removing the checkpoint.
 
 On `SIGINT` or `SIGTERM`, training retains the exclusive lock while reaching
 the next coherent epoch boundary and installing its recovery checkpoint. The

@@ -119,8 +119,15 @@ and report succeeds. Successful finalization installs `weights.txt` before
 durably removing `checkpoint.txt`; a failure before the weights rename leaves
 the latest successfully installed checkpoint available. If finalization is
 interrupted after the weights rename, both valid files may remain for the
-resume transition to reconcile. Refinement is a later Milestone 5
-responsibility.
+resume transition to reconcile.
+
+Refinement starts from validated final weights and runs exactly the requested
+number of further updates over cumulative absolute epoch numbers. It installs
+periodic or signal-requested recovery checkpoints while retaining the previous
+weights as a stable baseline. Successful completion atomically replaces those
+weights and then removes any checkpoint. The same epoch observer, periodic
+schedule, signal handling, and deterministic reduction rules apply to fresh,
+resumed, and additional training.
 
 ## Absolute Epoch Ranges
 
@@ -136,4 +143,6 @@ emits no epoch report. It still evaluates the complete dataset once so the
 returned final loss describes the already completed model, and it resolves the
 effective worker count normally. Fresh training is the range from zero to the
 configured epoch count. Resume is the range from the validated checkpoint
-boundary to its validated target.
+boundary to its validated target. Additional training is the range from the
+final weights' cumulative completed boundary to that boundary plus the checked
+requested increment.

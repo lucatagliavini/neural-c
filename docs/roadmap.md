@@ -36,8 +36,10 @@
   - **5.3 — complete:** minimal `SIGINT` and `SIGTERM` stop requests,
     one coherent atomic recovery checkpoint, resumable interruption, and
     conventional 130/143 exit statuses after successful persistence.
-  - **5.4 — next:** refinement through `--additional-epochs`.
-  - **5.5:** deterministic prediction CLI.
+  - **5.4 — complete:** cumulative refinement through `--additional-epochs`,
+    stable baseline weights, resumable absolute-epoch checkpoints, checked
+    targets, repeated runs, and graceful interruption.
+  - **5.5 — next:** deterministic prediction CLI.
 - **Milestone 6:** runtime validation on x86-64 and ppc64le.
 
 Read `specification.md`, `model-runtime.md`, `training-engine.md`,

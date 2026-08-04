@@ -1,6 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
+#include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -461,9 +463,304 @@ static void test_interrupted_finalization_reconciliation(void)
                                            &execution,
                                            &result,
                                            &error) &&
-                  strstr(error.message, "do not match checkpoint target") != NULL &&
+                  strstr(error.message, "precede configured epochs") != NULL &&
                   path_exists(checkpoint_path) && path_exists(weights_path),
               "weights epoch mismatches must leave interrupted state untouched");
+    }
+    cleanup_project(directory);
+}
+
+static void test_additional_matches_continuous_training(void)
+{
+    static const char *const directory = "build/tests/additional-equivalence";
+    NeuralExecutionConfig parallel = {4U};
+    NeuralTrainingResult result;
+    NeuralTrainingResult expected_result;
+    NeuralProject project = {0};
+    NeuralProjectDigests digests;
+    NeuralWeightsMetadata metadata;
+    NeuralModel *refined_model = NULL;
+    NeuralModel *expected_model = NULL;
+    NeuralError error;
+    char weights_path[256];
+    char checkpoint_path[256];
+    int prepared;
+
+    project_path(weights_path, sizeof(weights_path), directory, "weights.txt");
+    project_path(checkpoint_path,
+                 sizeof(checkpoint_path),
+                 directory,
+                 "checkpoint.txt");
+    prepared = prepare_project(directory, 4U, 2U) &&
+               save_weights_state(directory, 4U, 4U, &error);
+    check(prepared, "additional equivalence fixture must be prepared");
+    if (prepared) {
+        check(neural_project_train_additional(directory,
+                                              &parallel,
+                                              2U,
+                                              &result,
+                                              &error) &&
+                  result.completed_epochs == 6U &&
+                  result.worker_count == 4U &&
+                  path_exists(weights_path) &&
+                  !path_exists(checkpoint_path),
+              "additional training must finalize exactly the requested epochs");
+        check(neural_project_load(directory, &project, &error) &&
+                  neural_project_digests_compute(&project, &digests, &error) &&
+                  neural_model_create(&project.model,
+                                      project.training.seed,
+                                      &refined_model,
+                                      &error) &&
+                  neural_model_create(&project.model,
+                                      project.training.seed,
+                                      &expected_model,
+                                      &error) &&
+                  neural_weights_load(weights_path,
+                                      refined_model,
+                                      &digests,
+                                      &metadata,
+                                      &error) &&
+                  neural_model_train_full_batch_range(expected_model,
+                                                      &project.dataset,
+                                                      &project.training,
+                                                      &parallel,
+                                                      0U,
+                                                      6U,
+                                                      NULL,
+                                                      NULL,
+                                                      &expected_result,
+                                                      &error) &&
+                  metadata.completed_epochs == 6U &&
+                  models_equal(refined_model, expected_model) &&
+                  result.final_loss == expected_result.final_loss,
+              "refinement must match continuous absolute-epoch training");
+        check(neural_project_train_additional(directory,
+                                              &parallel,
+                                              1U,
+                                              &result,
+                                              &error) &&
+                  result.completed_epochs == 7U,
+              "additional training must support repeated refinements");
+    }
+    neural_model_free(expected_model);
+    neural_model_free(refined_model);
+    neural_project_free(&project);
+    cleanup_project(directory);
+}
+
+static void test_additional_interruption_and_resume(void)
+{
+    static const char *const directory = "build/tests/additional-interrupt";
+    NeuralExecutionConfig execution = {3U};
+    NeuralTrainingResult result;
+    NeuralError error;
+    NeuralProject project = {0};
+    NeuralProjectDigests digests;
+    NeuralCheckpointMetadata checkpoint_metadata;
+    NeuralWeightsMetadata weights_metadata;
+    NeuralModel *checkpoint_model = NULL;
+    NeuralModel *weights_model = NULL;
+    volatile sig_atomic_t stop_request = SIGTERM;
+    int interrupted_signal = 0;
+    char weights_path[256];
+    char before_path[256];
+    char checkpoint_path[256];
+    int prepared;
+
+    project_path(weights_path, sizeof(weights_path), directory, "weights.txt");
+    project_path(before_path,
+                 sizeof(before_path),
+                 directory,
+                 "weights.before");
+    project_path(checkpoint_path,
+                 sizeof(checkpoint_path),
+                 directory,
+                 "checkpoint.txt");
+    prepared = prepare_project(directory, 4U, 0U) &&
+               save_weights_state(directory, 4U, 4U, &error) &&
+               copy_file(weights_path, before_path);
+    check(prepared, "additional interruption fixture must be prepared");
+    if (prepared) {
+        check(!neural_project_train_additional_controlled(
+                  directory,
+                  &execution,
+                  2U,
+                  &stop_request,
+                  &interrupted_signal,
+                  &result,
+                  &error) &&
+                  interrupted_signal == SIGTERM &&
+                  strstr(error.message, "checkpoint saved") != NULL &&
+                  files_equal(weights_path, before_path) &&
+                  path_exists(checkpoint_path),
+              "interrupted refinement must preserve baseline weights and save recovery");
+        check(neural_project_load(directory, &project, &error) &&
+                  neural_project_digests_compute(&project, &digests, &error) &&
+                  neural_model_create(&project.model,
+                                      project.training.seed,
+                                      &checkpoint_model,
+                                      &error) &&
+                  neural_checkpoint_load(checkpoint_path,
+                                         checkpoint_model,
+                                         &digests,
+                                         &checkpoint_metadata,
+                                         &error) &&
+                  checkpoint_metadata.completed_epochs == 5U &&
+                  checkpoint_metadata.target_epochs == 6U,
+              "interrupted refinement checkpoint must use absolute epochs");
+        check(neural_project_train_resume(directory,
+                                          &execution,
+                                          &result,
+                                          &error) &&
+                  result.completed_epochs == 6U &&
+                  !path_exists(checkpoint_path) &&
+                  neural_model_create(&project.model,
+                                      project.training.seed,
+                                      &weights_model,
+                                      &error) &&
+                  neural_weights_load(weights_path,
+                                      weights_model,
+                                      &digests,
+                                      &weights_metadata,
+                                      &error) &&
+                  weights_metadata.completed_epochs == 6U &&
+                  models_equal(checkpoint_model, weights_model) == 0,
+              "resume must finish an interrupted refinement and replace baseline");
+    }
+    neural_model_free(weights_model);
+    neural_model_free(checkpoint_model);
+    neural_project_free(&project);
+    cleanup_project(directory);
+}
+
+static void test_additional_state_validation(void)
+{
+    static const char *const directory = "build/tests/additional-validation";
+    NeuralExecutionConfig execution = {2U};
+    NeuralTrainingResult result;
+    NeuralError error;
+    char weights_path[256];
+    char before_path[256];
+    char checkpoint_path[256];
+    int prepared;
+
+    project_path(weights_path, sizeof(weights_path), directory, "weights.txt");
+    project_path(before_path,
+                 sizeof(before_path),
+                 directory,
+                 "weights.before");
+    project_path(checkpoint_path,
+                 sizeof(checkpoint_path),
+                 directory,
+                 "checkpoint.txt");
+
+    prepared = prepare_project(directory, 4U, 2U);
+    check(prepared, "missing weights fixture must be prepared");
+    if (prepared) {
+        check(!neural_project_train_additional(directory,
+                                               &execution,
+                                               1U,
+                                               &result,
+                                               &error) &&
+                  strstr(error.message, "requires finalized weights") != NULL &&
+                  !path_exists(checkpoint_path),
+              "additional training must require final weights");
+    }
+    cleanup_project(directory);
+
+    prepared = prepare_project(directory, 4U, 2U) &&
+               save_weights_state(directory, 4U, 4U, &error) &&
+               save_checkpoint_state(directory, 4U, 4U, 6U, &error) &&
+               copy_file(weights_path, before_path);
+    check(prepared, "existing checkpoint fixture must be prepared");
+    if (prepared) {
+        check(!neural_project_train_additional(directory,
+                                               &execution,
+                                               1U,
+                                               &result,
+                                               &error) &&
+                  strstr(error.message, "use --resume") != NULL &&
+                  files_equal(weights_path, before_path) &&
+                  path_exists(checkpoint_path),
+              "additional training must refuse an existing recovery run");
+    }
+    cleanup_project(directory);
+
+    prepared = prepare_project(directory, 4U, 0U) &&
+               save_weights_state(directory, 4U, SIZE_MAX, &error) &&
+               copy_file(weights_path, before_path);
+    check(prepared, "additional overflow fixture must be prepared");
+    if (prepared) {
+        check(!neural_project_train_additional(directory,
+                                               &execution,
+                                               1U,
+                                               &result,
+                                               &error) &&
+                  strstr(error.message, "exceeds supported range") != NULL &&
+                  files_equal(weights_path, before_path) &&
+                  !path_exists(checkpoint_path),
+              "additional target overflow must fail before disk mutation");
+    }
+    cleanup_project(directory);
+
+    prepared = prepare_project(directory, 4U, 0U) &&
+               save_weights_state(directory, 3U, 3U, &error);
+    check(prepared, "incomplete final weights fixture must be prepared");
+    if (prepared) {
+        check(!neural_project_train_additional(directory,
+                                               &execution,
+                                               1U,
+                                               &result,
+                                               &error) &&
+                  strstr(error.message, "precede configured epochs") != NULL &&
+                  !path_exists(checkpoint_path),
+              "additional training must reject incomplete final weights");
+    }
+    cleanup_project(directory);
+
+    prepared = prepare_project(directory, 4U, 0U) &&
+               save_weights_state(directory, 4U, 4U, &error);
+    check(prepared, "zero-interval additional fixture must be prepared");
+    if (prepared) {
+        check(neural_project_train_additional(directory,
+                                              &execution,
+                                              1U,
+                                              &result,
+                                              &error) &&
+                  result.completed_epochs == 5U &&
+                  !path_exists(checkpoint_path),
+              "zero interval must avoid checkpoints during normal refinement");
+    }
+    cleanup_project(directory);
+
+    prepared = prepare_project(directory, 4U, 0U) &&
+               save_weights_state(directory, 4U, 4U, &error) &&
+               save_checkpoint_state(directory, 3U, 3U, 6U, &error);
+    check(prepared, "checkpoint before refinement baseline fixture must prepare");
+    if (prepared) {
+        check(!neural_project_train_resume(directory,
+                                           &execution,
+                                           &result,
+                                           &error) &&
+                  strstr(error.message, "precede refinement baseline") != NULL &&
+                  path_exists(weights_path) && path_exists(checkpoint_path),
+              "resume must reject checkpoints before the refinement baseline");
+    }
+    cleanup_project(directory);
+
+    prepared = prepare_project(directory, 4U, 0U) &&
+               save_weights_state(directory, 4U, 4U, &error) &&
+               save_checkpoint_state(directory, 3U, 4U, 6U, &error);
+    check(prepared, "mismatched refinement baseline fixture must be prepared");
+    if (prepared) {
+        check(!neural_project_train_resume(directory,
+                                           &execution,
+                                           &result,
+                                           &error) &&
+                  strstr(error.message,
+                         "do not match baseline weights") != NULL &&
+                  path_exists(weights_path) && path_exists(checkpoint_path),
+              "resume must reject same-epoch refinement parameter mismatches");
     }
     cleanup_project(directory);
 }
@@ -566,6 +863,9 @@ int main(void)
     test_resume_matches_continuous_training();
     test_interrupted_finalization_reconciliation();
     test_target_and_write_failures();
+    test_additional_matches_continuous_training();
+    test_additional_interruption_and_resume();
+    test_additional_state_validation();
 
     if (failures != 0) {
         fprintf(stderr, "%d training-resume test(s) failed\n", failures);

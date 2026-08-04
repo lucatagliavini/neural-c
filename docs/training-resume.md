@@ -26,22 +26,27 @@ state checks through final persistence. Contention fails immediately; see
 `train <project> --resume` requires `checkpoint.txt` and continues to the
 checkpoint target. `train <project> --additional-epochs N` requires
 `weights.txt`, starts a new run from those weights, resets optimizer/run state,
-and targets exactly `N` further epochs. Resume and additional epochs are
-mutually exclusive.
+and targets exactly `N` further epochs. The persisted completed-epoch count is
+absolute and cumulative across refinements. Resume and additional epochs are
+mutually exclusive, and a target addition that would overflow `size_t` is
+rejected before disk mutation.
 
 A checkpoint always represents the boundary after a fully completed epoch.
-Interrupted partial epochs are discarded and repeated. If both persistence
-files remain after an interrupted finalization, resume validates both and
-finishes the commit; refinement must refuse while a checkpoint exists.
+Interrupted partial epochs are discarded and repeated. Refinement refuses
+while any checkpoint exists and directs the user to `--resume`. During active
+refinement both persistence files deliberately coexist: `weights.txt` remains
+the last stable baseline and `checkpoint.txt` owns the in-progress run.
 
 ## Resume Validation and State Machine
 
 Resume acquires the exclusive project lock before examining persistence state.
 It loads the project, computes canonical digests, constructs compatible runtime
 models, and validates complete persistence payloads before any disk mutation.
-The checkpoint target must equal the configured project epoch count in addition
-to the persistence-format invariants. A different execution-only worker count
-is allowed.
+For checkpoint-only fresh training, the target must equal the configured
+project epoch count in addition to the persistence-format invariants. A
+refinement checkpoint may exceed that configured count and is identified by a
+validated baseline `weights.txt` whose completed count is smaller than the
+checkpoint target. A different execution-only worker count is allowed.
 
 The valid and invalid file combinations are:
 
@@ -49,16 +54,23 @@ The valid and invalid file combinations are:
 | --- | --- | --- |
 | absent | absent | Fail: no resumable state. |
 | absent | present | Fail: the project is already finalized. |
-| present | absent | Continue from checkpoint, or finalize directly when already at target. |
-| present | present | Validate interrupted finalization, then remove only the checkpoint. |
+| present | absent | Continue only a configured fresh run, or finalize it directly at target. |
+| present | present | Validate finalization or active refinement from the epoch relationship. |
 
-For interrupted finalization, weights must match all project digests and report
-exactly the checkpoint target as their completed epoch count. The checkpoint
-must independently be valid for the same target. When the checkpoint is also
-at target, its model parameters must be bit-identical to final weights; an older
-periodic checkpoint may legitimately contain earlier parameters. Any malformed
-payload, provenance mismatch, epoch mismatch, or same-epoch parameter mismatch
-leaves both files untouched.
+When weights report exactly the checkpoint target, they represent interrupted
+finalization. The checkpoint must independently be valid for that target. When
+it is also at target, its model parameters must be bit-identical to final
+weights; an older periodic checkpoint may legitimately contain earlier
+parameters. Resume then removes only the checkpoint without rewriting weights.
+
+When weights report fewer epochs than the checkpoint target, they represent a
+refinement baseline. Their completed count must be at least the configured
+fresh-training epoch count, the checkpoint may not precede that baseline, and
+same-epoch checkpoint parameters must be bit-identical to it. Resume continues
+from the checkpoint model and atomically replaces the baseline only at the new
+target. Weights beyond the target, incomplete baseline weights, malformed
+payloads, provenance mismatches, or invalid epoch relationships leave both
+files untouched.
 
 After loading a checkpoint-only state, resume runs the absolute epoch range
 `[completed_epochs, target_epochs)`. Periodic saves retain absolute epoch
@@ -67,6 +79,26 @@ replacements but retains the checkpoint that made resume possible. Successful
 completion atomically installs final weights and then durably removes the
 checkpoint. A failure before completion produces no final weights; an ambiguous
 post-rename failure is reconciled by the two-file rule on the next resume.
+
+## Refinement Transition
+
+Additional training acquires the exclusive lock, requires valid final weights
+and no checkpoint, and computes `target = completed + N` with checked
+arithmetic. The original `weights.txt` remains byte-for-byte unchanged
+throughout training and is therefore still a valid model if the process
+crashes before the first completed epoch.
+
+Updates run over the absolute range `[baseline, target)`. Periodic checkpoint
+boundaries use the same cumulative epoch numbering as fresh training and
+resume. On success, the refined model atomically replaces `weights.txt` with
+the cumulative target count, then the checkpoint is durably removed. A failure
+before any checkpoint leaves only the unchanged baseline and the refinement
+can be restarted. A graceful signal, or a later failure after a periodic save,
+leaves the baseline plus a resumable checkpoint. With `checkpoint_interval 0`,
+normal refinement performs no checkpoint write and persists only the final
+weights. Repeated refinements apply the same transition from the latest
+completed count. Gradient descent has no additional optimizer buffers; its run
+state and model RNG state are reset deterministically for each refinement.
 
 ## Text Metadata
 

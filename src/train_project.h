@@ -15,6 +15,11 @@ int neural_project_train_resume(const char *directory,
                                 const NeuralExecutionConfig *execution,
                                 NeuralTrainingResult *result,
                                 NeuralError *error);
+int neural_project_train_additional(const char *directory,
+                                    const NeuralExecutionConfig *execution,
+                                    size_t additional_epochs,
+                                    NeuralTrainingResult *result,
+                                    NeuralError *error);
 int neural_project_train_fresh_controlled(
     const char *directory,
     const NeuralExecutionConfig *execution,
@@ -25,6 +30,14 @@ int neural_project_train_fresh_controlled(
 int neural_project_train_resume_controlled(
     const char *directory,
     const NeuralExecutionConfig *execution,
+    const volatile sig_atomic_t *stop_request,
+    int *interrupted_signal,
+    NeuralTrainingResult *result,
+    NeuralError *error);
+int neural_project_train_additional_controlled(
+    const char *directory,
+    const NeuralExecutionConfig *execution,
+    size_t additional_epochs,
     const volatile sig_atomic_t *stop_request,
     int *interrupted_signal,
     NeuralTrainingResult *result,

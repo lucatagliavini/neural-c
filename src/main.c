@@ -439,7 +439,8 @@ static int command_train(const char *directory,
         return EXIT_USAGE;
     }
     if (request.mode == NEURAL_TRAIN_FRESH ||
-        request.mode == NEURAL_TRAIN_RESUME) {
+        request.mode == NEURAL_TRAIN_RESUME ||
+        request.mode == NEURAL_TRAIN_ADDITIONAL) {
         if (!training_signals_install(&signal_guard, &error)) {
             fprintf(stderr, "%s: %s\n", neural_name(), error.message);
             return EXIT_RUNTIME;
@@ -452,10 +453,19 @@ static int command_train(const char *directory,
                 &interrupted_signal,
                 &result,
                 &error);
-        } else {
+        } else if (request.mode == NEURAL_TRAIN_RESUME) {
             trained = neural_project_train_resume_controlled(
                 directory,
                 &execution,
+                &training_stop_signal,
+                &interrupted_signal,
+                &result,
+                &error);
+        } else {
+            trained = neural_project_train_additional_controlled(
+                directory,
+                &execution,
+                request.additional_epochs,
                 &training_stop_signal,
                 &interrupted_signal,
                 &result,
@@ -476,14 +486,8 @@ static int command_train(const char *directory,
                result.worker_count);
         return EXIT_OK;
     }
-    fprintf(stderr,
-            "%s: training mode '%s' is not implemented yet "
-            "(project: %s, threads: %zu)\n",
-            neural_name(),
-            neural_training_mode_name(request.mode),
-            directory,
-            execution.thread_count);
-    return EXIT_NOT_IMPLEMENTED;
+    fprintf(stderr, "%s: unknown training mode\n", neural_name());
+    return EXIT_RUNTIME;
 }
 
 static int command_predict(const char *project,

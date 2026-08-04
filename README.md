@@ -96,14 +96,16 @@ worker count:
 ./neural-c.sh train projects/example --resume
 ```
 
-It also safely completes interrupted finalization when both valid persistence
-files remain. Refinement is reserved for the next continuation checkpoint:
+It also safely completes interrupted finalization and refinement when both
+valid persistence files remain. Start refinement from final weights with:
 
 ```sh
 ./neural-c.sh train projects/example --additional-epochs 2000
 ```
 
-Refinement will start from final `weights.txt`.
+Refinement retains the prior `weights.txt` as a stable baseline until all
+additional epochs complete, records cumulative epoch counts, and may be
+repeated. If interrupted, continue its checkpoint with `--resume`.
 The generated `checkpoint_interval` setting controls periodic saves; setting
 it to `0` disables them while retaining the final `weights.txt` write.
 `SIGINT` and `SIGTERM` stop at the next completed epoch and atomically save one
@@ -126,7 +128,7 @@ Run the architecture-appropriate executable through the launcher:
 ```
 
 `inspect` loads and validates the complete project and prints its canonical
-model, dataset, and training SHA-256 digests. Fresh training and resume are
-implemented; `predict` and refinement remain planned. The reusable option parser
+model, dataset, and training SHA-256 digests. Fresh training, resume, and
+refinement are implemented; `predict` remains planned. The reusable option parser
 supports `--option value`, `--option=value`, short options, and `--` before
 positional values that begin with `-`.
