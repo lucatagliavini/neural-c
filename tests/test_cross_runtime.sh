@@ -215,6 +215,8 @@ native_dir=$work_dir/native
 ppc64le_dir=$work_dir/ppc64le
 native_to_ppc64le_dir=$work_dir/native-to-ppc64le
 ppc64le_to_native_dir=$work_dir/ppc64le-to-native
+native_data_dir=$work_dir/native-data
+ppc64le_data_dir=$work_dir/ppc64le-data
 prepare_project "$native_dir"
 prepare_project "$ppc64le_dir"
 prepare_project "$native_to_ppc64le_dir"
@@ -293,5 +295,37 @@ assert_xor_prediction "$work_dir/ppc64le-to-native.native-predict"
 compare_prediction_documents \
     "$work_dir/ppc64le-to-native.native-predict" \
     "$work_dir/ppc64le-to-native.ppc64le-predict"
+
+printf 'Cross-runtime: exchanging preprocessing-bound native weights\n'
+run_native init "$native_data_dir" --inputs 4 --layer 3:softmax \
+    --epochs 2 --checkpoint-interval 0 >/dev/null
+run_native import-csv "$native_data_dir" tests/fixtures/iris-small.csv \
+    --schema tests/fixtures/iris-schema.txt --validation-ratio 0.16666666666666666 \
+    --test-ratio 0.16666666666666666 --split-seed 42 \
+    --normalization standardize --missing mean >/dev/null
+run_native train "$native_data_dir" --threads 2 >/dev/null
+run_native predict "$native_data_dir" 5.1 3.5 1.4 '?' --threads 1 \
+    >"$work_dir/native-data.native-predict"
+run_ppc64le predict "$native_data_dir" 5.1 3.5 1.4 '?' --threads 2 \
+    >"$work_dir/native-data.ppc64le-predict"
+compare_prediction_documents \
+    "$work_dir/native-data.native-predict" \
+    "$work_dir/native-data.ppc64le-predict"
+
+printf 'Cross-runtime: exchanging preprocessing-bound ppc64le weights\n'
+run_ppc64le init "$ppc64le_data_dir" --inputs 4 --layer 3:softmax \
+    --epochs 2 --checkpoint-interval 0 >/dev/null
+run_ppc64le import-csv "$ppc64le_data_dir" tests/fixtures/iris-small.csv \
+    --schema tests/fixtures/iris-schema.txt --validation-ratio 0.16666666666666666 \
+    --test-ratio 0.16666666666666666 --split-seed 42 \
+    --normalization minmax --missing mean >/dev/null
+run_ppc64le train "$ppc64le_data_dir" --threads 2 >/dev/null
+run_ppc64le predict "$ppc64le_data_dir" 6.4 3.2 4.5 1.5 --threads 1 \
+    >"$work_dir/ppc64le-data.ppc64le-predict"
+run_native predict "$ppc64le_data_dir" 6.4 3.2 4.5 1.5 --threads 2 \
+    >"$work_dir/ppc64le-data.native-predict"
+compare_prediction_documents \
+    "$work_dir/ppc64le-data.ppc64le-predict" \
+    "$work_dir/ppc64le-data.native-predict"
 
 printf 'All cross-runtime tests passed\n'

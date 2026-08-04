@@ -263,6 +263,25 @@ int neural_project_digests_compute(const NeuralProject *project,
         return 0;
     }
     digest_dataset(&project->dataset, digests->dataset);
+    if (project->has_preprocessing) {
+        NeuralSha256 context;
+        unsigned char digest[32];
+        char preprocessing_digest[NEURAL_SHA256_TEXT_CAPACITY];
+
+        if (project->preprocessing.input_count != project->model.input_count ||
+            !neural_preprocessing_digest(&project->preprocessing,
+                                         preprocessing_digest,
+                                         error)) {
+            return 0;
+        }
+        neural_sha256_init(&context);
+        update_text(&context, NEURAL_FORMAT_MAGIC ":canonical:data-pipeline");
+        update_u64(&context, UINT64_C(1));
+        update_text(&context, digests->dataset);
+        update_text(&context, preprocessing_digest);
+        neural_sha256_final(&context, digest);
+        digest_to_hex(digest, digests->dataset);
+    }
     digest_training(&project->training,
                     project->has_validation ? &project->validation : NULL,
                     digests->training);

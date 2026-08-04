@@ -17,7 +17,7 @@ CPPFLAGS += -Iinclude
 CFLAGS += -std=c11 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow $(THREAD_FLAGS)
 LDLIBS += -lm
 
-LIBRARY_SOURCES := src/activation.c src/atomic_file.c src/backprop.c src/batch.c src/cli_options.c src/compensated_sum.c src/dense.c src/digest.c src/error.c src/evaluation.c src/executor.c src/gradient.c src/gradient_check.c src/init.c src/loss.c src/model.c src/parallel.c src/parse.c src/path.c src/persistence.c src/predict_project.c src/project.c src/project_checkpoint.c src/project_lock.c src/random.c src/sha256.c src/tensor_ops.c src/train_project.c src/training.c src/version.c
+LIBRARY_SOURCES := src/activation.c src/atomic_file.c src/backprop.c src/batch.c src/cli_options.c src/compensated_sum.c src/data_import.c src/dense.c src/digest.c src/error.c src/evaluation.c src/executor.c src/gradient.c src/gradient_check.c src/init.c src/input_document.c src/loss.c src/model.c src/parallel.c src/parse.c src/path.c src/persistence.c src/predict_project.c src/preprocessing.c src/project.c src/project_checkpoint.c src/project_lock.c src/random.c src/sha256.c src/tensor_ops.c src/train_project.c src/training.c src/version.c
 PROGRAM_SOURCES := src/main.c $(LIBRARY_SOURCES)
 PUBLIC_HEADERS := $(wildcard include/neural/*.h)
 INTERNAL_HEADERS := $(wildcard src/*.h)
@@ -35,9 +35,11 @@ PROJECT_LOCK_TEST_SOURCES := tests/test_project_lock.c $(LIBRARY_SOURCES)
 TRAINING_RESUME_TEST_SOURCES := tests/test_training_resume.c $(LIBRARY_SOURCES)
 PREDICTION_TEST_SOURCES := tests/test_prediction.c $(LIBRARY_SOURCES)
 EVALUATION_TEST_SOURCES := tests/test_evaluation.c $(LIBRARY_SOURCES)
+INPUT_DOCUMENT_TEST_SOURCES := tests/test_input_document.c $(LIBRARY_SOURCES)
+DATA_IMPORT_TEST_SOURCES := tests/test_data_import.c $(LIBRARY_SOURCES)
 TEST_NAMES := core model persistence math parallel backprop gradient_check batch
 TEST_NAMES += training_engine checkpoint_observer project_lock training_resume
-TEST_NAMES += prediction evaluation
+TEST_NAMES += prediction evaluation input_document data_import
 PPC64LE_TEST_BINARIES := $(addprefix build/ppc64le/tests/test_,$(TEST_NAMES))
 
 .PHONY: all build build-native build-ppc64le test test-defaults
@@ -117,11 +119,19 @@ build/tests/test_evaluation: $(EVALUATION_TEST_SOURCES) $(PUBLIC_HEADERS) $(INTE
 	mkdir -p $(@D)
 	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) $(EVALUATION_TEST_SOURCES) -o $@ $(LDLIBS)
 
+build/tests/test_input_document: $(INPUT_DOCUMENT_TEST_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
+	mkdir -p $(@D)
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) $(INPUT_DOCUMENT_TEST_SOURCES) -o $@ $(LDLIBS)
+
+build/tests/test_data_import: $(DATA_IMPORT_TEST_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
+	mkdir -p $(@D)
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) $(DATA_IMPORT_TEST_SOURCES) -o $@ $(LDLIBS)
+
 build/ppc64le/tests/test_%: tests/test_%.c $(LIBRARY_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
 	mkdir -p $(@D)
 	$(PPC64LE_CC) $(CPPFLAGS) $(CFLAGS) $< $(LIBRARY_SOURCES) -o $@ $(LDLIBS)
 
-test: build/tests/test_core build/tests/test_model build/tests/test_persistence build/tests/test_math build/tests/test_parallel build/tests/test_backprop build/tests/test_gradient_check build/tests/test_batch build/tests/test_training_engine build/tests/test_checkpoint_observer build/tests/test_project_lock build/tests/test_training_resume build/tests/test_prediction build/tests/test_evaluation
+test: build/tests/test_core build/tests/test_model build/tests/test_persistence build/tests/test_math build/tests/test_parallel build/tests/test_backprop build/tests/test_gradient_check build/tests/test_batch build/tests/test_training_engine build/tests/test_checkpoint_observer build/tests/test_project_lock build/tests/test_training_resume build/tests/test_prediction build/tests/test_evaluation build/tests/test_input_document build/tests/test_data_import
 	./build/tests/test_core
 	./build/tests/test_model
 	./build/tests/test_persistence
@@ -136,6 +146,8 @@ test: build/tests/test_core build/tests/test_model build/tests/test_persistence 
 	./build/tests/test_training_resume
 	./build/tests/test_prediction
 	./build/tests/test_evaluation
+	./build/tests/test_input_document
+	./build/tests/test_data_import
 
 test-ppc64le: $(PPC64LE_TEST_BINARIES)
 	@for test_binary in $(PPC64LE_TEST_BINARIES); do \
@@ -234,6 +246,14 @@ test-sanitize:
 		-fsanitize=address,undefined -fno-omit-frame-pointer \
 		$(EVALUATION_TEST_SOURCES) -o build/tests/test_evaluation_sanitize $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_evaluation_sanitize
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) -O1 -g \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		$(INPUT_DOCUMENT_TEST_SOURCES) -o build/tests/test_input_document_sanitize $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_input_document_sanitize
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) -O1 -g \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		$(DATA_IMPORT_TEST_SOURCES) -o build/tests/test_data_import_sanitize $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_data_import_sanitize
 
 test-thread-sanitize:
 	mkdir -p build/tests

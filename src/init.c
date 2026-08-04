@@ -23,6 +23,7 @@ enum managed_file_index {
     MANAGED_DATASET,
     MANAGED_WEIGHTS,
     MANAGED_CHECKPOINT,
+    MANAGED_PREPROCESSING,
     MANAGED_FILE_COUNT
 };
 
@@ -219,21 +220,24 @@ static int prepare_paths(const char *directory,
         NEURAL_DEFAULT_PROJECT_FILENAME,
         NEURAL_DEFAULT_DATASET_FILENAME,
         NEURAL_DEFAULT_WEIGHTS_FILENAME,
-        NEURAL_DEFAULT_CHECKPOINT_FILENAME
+        NEURAL_DEFAULT_CHECKPOINT_FILENAME,
+        NEURAL_DEFAULT_PREPROCESSING_FILENAME
     };
     static const char *const new_names[MANAGED_FILE_COUNT] = {
         ".neural-c-model.new",
         ".neural-c-project.new",
         ".neural-c-dataset.new",
         ".neural-c-weights.new",
-        ".neural-c-checkpoint.new"
+        ".neural-c-checkpoint.new",
+        ".neural-c-preprocessing.new"
     };
     static const char *const old_names[MANAGED_FILE_COUNT] = {
         ".neural-c-model.old",
         ".neural-c-project.old",
         ".neural-c-dataset.old",
         ".neural-c-weights.old",
-        ".neural-c-checkpoint.old"
+        ".neural-c-checkpoint.old",
+        ".neural-c-preprocessing.old"
     };
     size_t index;
 

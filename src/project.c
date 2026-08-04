@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "neural/project.h"
 
 #include <ctype.h>
@@ -6,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "neural/defaults.h"
 #include "neural/parse.h"
@@ -1053,8 +1056,10 @@ void neural_project_free(NeuralProject *project)
         neural_model_spec_free(&project->model);
         neural_dataset_free(&project->dataset);
         neural_dataset_free(&project->validation);
+        neural_preprocessing_free(&project->preprocessing);
         memset(&project->training, 0, sizeof(project->training));
         project->has_validation = 0;
+        project->has_preprocessing = 0;
     }
 }
 
@@ -1066,6 +1071,8 @@ int neural_project_load(const char *directory,
     char *config_path = NULL;
     char *dataset_path = NULL;
     char *validation_path = NULL;
+    char *preprocessing_path = NULL;
+    struct stat preprocessing_status;
     size_t output_count;
     int success = 0;
 
@@ -1092,6 +1099,32 @@ int neural_project_load(const char *directory,
     if (!neural_training_config_load(config_path,
                                      &project->training,
                                      error)) {
+        goto cleanup;
+    }
+    preprocessing_path = neural_path_join(
+        directory, NEURAL_DEFAULT_PREPROCESSING_FILENAME, error);
+    if (preprocessing_path == NULL) {
+        goto cleanup;
+    }
+    if (lstat(preprocessing_path, &preprocessing_status) == 0) {
+        if (!S_ISREG(preprocessing_status.st_mode) ||
+            !neural_preprocessing_load(preprocessing_path,
+                                       &project->preprocessing,
+                                       error) ||
+            project->preprocessing.input_count != project->model.input_count) {
+            if (error != NULL && error->message[0] == '\0') {
+                neural_error_set(error,
+                                 "%s: preprocessing input width does not match model",
+                                 preprocessing_path);
+            }
+            goto cleanup;
+        }
+        project->has_preprocessing = 1;
+    } else if (errno != ENOENT) {
+        neural_error_set(error,
+                         "%s: unable to inspect file: %s",
+                         preprocessing_path,
+                         strerror(errno));
         goto cleanup;
     }
     output_count = project->model.layers[project->model.layer_count - 1U]
@@ -1124,6 +1157,7 @@ cleanup:
     free(config_path);
     free(dataset_path);
     free(validation_path);
+    free(preprocessing_path);
     if (!success) {
         neural_project_free(project);
     }

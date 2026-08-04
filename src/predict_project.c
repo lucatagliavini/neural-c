@@ -3,6 +3,7 @@
 #include "predict_project.h"
 
 #include <pthread.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,7 +32,9 @@ void neural_prediction_snapshot_free(NeuralPredictionSnapshot *snapshot)
 {
     if (snapshot != NULL) {
         neural_model_free(snapshot->model);
+        neural_preprocessing_free(&snapshot->preprocessing);
         snapshot->model = NULL;
+        snapshot->has_preprocessing = 0;
         snapshot->input_count = 0U;
         snapshot->output_count = 0U;
         snapshot->completed_epochs = 0U;
@@ -95,14 +98,61 @@ static int load_snapshot_from_project(const char *directory,
     loaded.target_epochs = metadata.target_epochs;
     loaded.completion_reason = metadata.completion_reason;
     loaded.format_version = metadata.format_version;
+    if (project->has_preprocessing &&
+        !neural_preprocessing_copy(&project->preprocessing,
+                                   &loaded.preprocessing,
+                                   error)) {
+        goto cleanup;
+    }
+    loaded.has_preprocessing = project->has_preprocessing;
     *snapshot = loaded;
     loaded.model = NULL;
+    memset(&loaded.preprocessing, 0, sizeof(loaded.preprocessing));
     success = 1;
 
 cleanup:
-    neural_model_free(loaded.model);
+    neural_prediction_snapshot_free(&loaded);
     free(weights_path);
     return success;
+}
+
+int neural_prediction_prepare_inputs(const NeuralPredictionSnapshot *snapshot,
+                                     neural_real *inputs,
+                                     size_t sample_count,
+                                     NeuralError *error)
+{
+    size_t value_count;
+    size_t index;
+
+    neural_error_clear(error);
+    if (snapshot == NULL || inputs == NULL || sample_count == 0U ||
+        snapshot->input_count == 0U ||
+        sample_count > SIZE_MAX / snapshot->input_count) {
+        neural_error_set(error, "prediction preprocessing inputs are invalid");
+        return 0;
+    }
+    if (snapshot->has_preprocessing) {
+        if (snapshot->preprocessing.input_count != snapshot->input_count) {
+            neural_error_set(error,
+                             "prediction preprocessing width does not match model");
+            return 0;
+        }
+        return neural_preprocessing_apply(&snapshot->preprocessing,
+                                          inputs,
+                                          sample_count,
+                                          error);
+    }
+    value_count = sample_count * snapshot->input_count;
+    for (index = 0U; index < value_count; index++) {
+        if (!isfinite(inputs[index])) {
+            neural_error_set(error,
+                             "non-finite prediction input at sample %zu feature %zu",
+                             index / snapshot->input_count,
+                             index % snapshot->input_count);
+            return 0;
+        }
+    }
+    return 1;
 }
 
 int neural_project_prediction_load(const char *directory,

@@ -65,6 +65,10 @@ checkpoint interval. A zero checkpoint interval canonically represents
 disabled periodic saves. When early stopping is enabled, the stream also
 contains its patience/minimum delta and the canonical validation digest.
 Disabled early stopping preserves the version 1 training digest exactly.
+When `preprocessing.txt` is present, the dataset digest additionally binds its
+canonical transform, raw CSV/schema SHA-256 provenance, split seed, ratios, and
+stratification flag. Projects without preprocessing preserve the legacy
+dataset digest exactly. The format and fit rules are in `data-interfaces.md`.
 Changing any owned value changes only its corresponding digest.
 
 ## Atomic Replacement

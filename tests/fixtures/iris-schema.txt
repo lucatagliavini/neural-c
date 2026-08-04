@@ -1,0 +1,9 @@
+neural-c csv-schema 1
+columns 5
+header yes
+inputs 0 1 2 3
+label 4
+class setosa 1 0 0
+class versicolor 0 1 0
+class virginica 0 0 1
+end

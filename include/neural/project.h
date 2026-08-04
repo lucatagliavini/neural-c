@@ -6,6 +6,7 @@
 
 #include "neural/activation.h"
 #include "neural/error.h"
+#include "neural/preprocessing.h"
 #include "neural/types.h"
 
 typedef enum {
@@ -47,6 +48,8 @@ typedef struct {
     NeuralDataset dataset;
     NeuralDataset validation;
     int has_validation;
+    NeuralPreprocessing preprocessing;
+    int has_preprocessing;
 } NeuralProject;
 
 /* Load destinations must not already own data; release successful loads. */

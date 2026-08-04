@@ -12,6 +12,8 @@
 
 typedef struct {
     NeuralModel *model;
+    NeuralPreprocessing preprocessing;
+    int has_preprocessing;
     size_t input_count;
     size_t output_count;
     size_t completed_epochs;
@@ -22,7 +24,7 @@ typedef struct {
 } NeuralPredictionSnapshot;
 
 #define NEURAL_PREDICTION_SNAPSHOT_INITIALIZER \
-    {NULL, 0U, 0U, 0U, 0U, 0U, NEURAL_COMPLETION_TARGET, 0U}
+    {NULL, {0}, 0, 0U, 0U, 0U, 0U, 0U, NEURAL_COMPLETION_TARGET, 0U}
 
 typedef struct {
     NeuralPredictionSnapshot prediction;
@@ -53,5 +55,9 @@ int neural_prediction_run(const NeuralPredictionSnapshot *snapshot,
                           neural_real *outputs,
                           size_t *worker_count,
                           NeuralError *error);
+int neural_prediction_prepare_inputs(const NeuralPredictionSnapshot *snapshot,
+                                     neural_real *inputs,
+                                     size_t sample_count,
+                                     NeuralError *error);
 
 #endif

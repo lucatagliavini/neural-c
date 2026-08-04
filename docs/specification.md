@@ -9,7 +9,8 @@ library must remain independent of third-party runtime dependencies.
 ## Project Files
 
 A project directory uses the conventional filenames `model.txt`,
-`project.conf`, `train.txt`, optional `validation.txt` and `test.txt`,
+`project.conf`, `train.txt`, optional `validation.txt` and `test.txt`, optional
+`preprocessing.txt`,
 `weights.txt`, and `checkpoint.txt`, plus diagnostic `history.txt` and the
 operational `.neural-c.lock`. Architecture belongs only in `model.txt`;
 training parameters belong only in `project.conf`; samples belong only in the
@@ -32,6 +33,8 @@ are authoritative in `persistence-format.md`. Prediction snapshot ownership
 and versioned CLI output are authoritative in `prediction.md`; validation,
 evaluation, history, and early stopping are defined in
 `observability-evaluation.md`.
+CSV ingestion, bulk input, split provenance, normalization, and missing-value
+rules are authoritative in `data-interfaces.md`.
 
 Thread count is execution-only configuration supplied by `--threads`; it must
 not appear in project files, digests, weights, or checkpoints. Parallel code

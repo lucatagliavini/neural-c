@@ -31,6 +31,9 @@ Mutating operations acquire an exclusive lock before inspecting mutable
 project state and retain it through their last persistence transition:
 
 - `init --force` holds it across staging, replacement, and rollback.
+- `import-csv` holds it while validating the schema and complete CSV, fitting
+  training-only preprocessing, staging every subset, and committing or rolling
+  back the data transaction.
 - Fresh training holds it across initial state checks, all epochs, periodic
   checkpoints, final weights installation, and checkpoint removal.
 - Resume follows the same rule through checkpoint validation, continuation, or

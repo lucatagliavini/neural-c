@@ -7,6 +7,7 @@ project_dir="build/tests/cli-init-project"
 training_dir="build/tests/cli-training-project"
 interrupt_dir="build/tests/cli-interrupt-project"
 early_dir="build/tests/cli-early-project"
+import_dir="build/tests/cli-import-project"
 
 cleanup() {
     rm -f -- \
@@ -52,6 +53,17 @@ cleanup() {
         "$early_dir/checkpoint.txt" \
         "$early_dir/.neural-c.lock"
     rmdir -- "$early_dir" 2>/dev/null || true
+    rm -f -- \
+        "$import_dir/model.txt" \
+        "$import_dir/project.conf" \
+        "$import_dir/train.txt" \
+        "$import_dir/validation.txt" \
+        "$import_dir/test.txt" \
+        "$import_dir/preprocessing.txt" \
+        "$import_dir/weights.txt" \
+        "$import_dir/checkpoint.txt" \
+        "$import_dir/.neural-c.lock"
+    rmdir -- "$import_dir" 2>/dev/null || true
 }
 trap cleanup EXIT
 cleanup
@@ -439,6 +451,40 @@ prediction_sequential=$(
     "$executable" predict "$training_dir" 0 0 0 1 1 0 1 1 --threads 1
 )
 [[ "$prediction_output" == "$prediction_sequential" ]]
+
+prediction_document="build/tests/prediction-input-v1.txt"
+cat >"$prediction_document" <<'EOF'
+neural-c inputs 1
+samples 4
+inputs 2
+sample 0 0 0
+sample 1 0 1
+sample 2 1 0
+sample 3 1 1
+end
+EOF
+prediction_file=$(
+    "$executable" predict "$training_dir" --input "$prediction_document" \
+        --batch-size 3 --threads 4
+)
+prediction_stdin=$(
+    "$executable" predict "$training_dir" --input - --batch-size 1 \
+        --threads 1 <"$prediction_document"
+)
+[[ "$prediction_file" == "$prediction_output" ]]
+[[ "$prediction_stdin" == "$prediction_output" ]]
+printf '%s\n' 'unexpected' >>"$prediction_document"
+set +e
+malformed_document_output=$(
+    "$executable" predict "$training_dir" --input "$prediction_document" \
+        --batch-size 2 2>"build/tests/prediction-input-error.txt"
+)
+malformed_document_status=$?
+set -e
+[[ $malformed_document_status -eq 1 ]]
+[[ -z $malformed_document_output ]]
+grep -q 'unexpected content after end' build/tests/prediction-input-error.txt
+rm -f -- "$prediction_document" build/tests/prediction-input-error.txt
 grep -q '^neural-c predictions 1$' <<<"$prediction_output"
 grep -q '^completed_epochs 10002$' <<<"$prediction_output"
 grep -q '^samples 4$' <<<"$prediction_output"
@@ -489,3 +535,38 @@ set -e
 [[ $checkpoint_status -eq 1 ]]
 grep -q 'checkpoint.txt already exists' <<<"$checkpoint_output"
 [[ ! -e "$training_dir/weights.txt" ]]
+
+"$executable" init "$import_dir" --inputs 4 --layer 3:softmax \
+    --epochs 2 --checkpoint-interval 0
+import_output=$(
+    "$executable" import-csv "$import_dir" tests/fixtures/iris-small.csv \
+        --schema tests/fixtures/iris-schema.txt \
+        --validation-ratio 0.16666666666666666 \
+        --test-ratio 0.16666666666666666 --split-seed 42 \
+        --normalization standardize --missing mean
+)
+grep -q '^CSV import complete: 18 samples, train 12, validation 3, test 3, stratified yes$' \
+    <<<"$import_output"
+grep -q '^neural-c preprocessing 1$' "$import_dir/preprocessing.txt"
+grep -q '^normalization standardize$' "$import_dir/preprocessing.txt"
+grep -q '^missing mean$' "$import_dir/preprocessing.txt"
+[[ $(grep -c ' -> ' "$import_dir/train.txt") -eq 12 ]]
+[[ $(grep -c ' -> ' "$import_dir/validation.txt") -eq 3 ]]
+[[ $(grep -c ' -> ' "$import_dir/test.txt") -eq 3 ]]
+"$executable" inspect "$import_dir" >/dev/null
+"$executable" train "$import_dir" --threads 2 >/dev/null
+import_prediction=$(
+    "$executable" predict "$import_dir" 5.1 3.5 1.4 '?' --threads 2
+)
+grep -q '^samples 1$' <<<"$import_prediction"
+grep -q '^outputs 3$' <<<"$import_prediction"
+grep -q '^end$' <<<"$import_prediction"
+set +e
+reimport_output=$(
+    "$executable" import-csv "$import_dir" tests/fixtures/iris-small.csv \
+        --schema tests/fixtures/iris-schema.txt --missing mean 2>&1
+)
+reimport_status=$?
+set -e
+[[ $reimport_status -eq 1 ]]
+grep -q 'would invalidate weights/checkpoint' <<<"$reimport_output"

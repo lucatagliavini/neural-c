@@ -59,6 +59,9 @@ static void test_core_contract(void)
           "default model filename must match the project convention");
     check(strcmp(NEURAL_DEFAULT_CHECKPOINT_FILENAME, "checkpoint.txt") == 0,
           "default checkpoint filename must match the persistence convention");
+    check(strcmp(NEURAL_DEFAULT_PREPROCESSING_FILENAME,
+                 "preprocessing.txt") == 0,
+          "default preprocessing filename must match the project convention");
     check(strlen(NEURAL_DEFAULT_ATOMIC_TEMP_SUFFIX) >= 6U &&
               strcmp(NEURAL_DEFAULT_ATOMIC_TEMP_SUFFIX +
                          strlen(NEURAL_DEFAULT_ATOMIC_TEMP_SUFFIX) - 6U,
@@ -68,6 +71,8 @@ static void test_core_contract(void)
           "SHA-256 text storage must include its terminator");
     check(NEURAL_DEFAULT_THREAD_COUNT >= 1U,
           "default execution thread count must be positive");
+    check(NEURAL_DEFAULT_PREDICTION_BATCH_SIZE >= 1U,
+          "default prediction batch size must be positive");
     check(isfinite(NEURAL_DEFAULT_GRADIENT_CHECK_EPSILON) &&
               NEURAL_DEFAULT_GRADIENT_CHECK_EPSILON > 0.0,
           "default gradient-check epsilon must be positive and finite");

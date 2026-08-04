@@ -71,19 +71,19 @@
   - **7.5 — complete:** add validation-driven early stopping with `patience`, `min_delta`,
     explicit best-state ownership, resumable state, and atomic finalization of
     the selected model rather than merely the last epoch.
-- **Milestone 8 — scalable data interfaces:**
-  - **8.1:** define a versioned multi-sample input document and extend prediction
+- **Milestone 8 — complete — scalable data interfaces:**
+  - **8.1 — complete:** define a versioned multi-sample input document and extend prediction
     to consume files or standard input in bounded batches while preserving
     ordered, deterministic version 1-compatible results.
-  - **8.2:** add strict CSV import with an explicit schema, locale-independent
+  - **8.2 — complete:** add strict CSV import with an explicit schema, locale-independent
     parsing, categorical label mapping, actionable row errors, and no implicit
     target or column guessing.
-  - **8.3:** add versioned normalization/standardization metadata computed from
+  - **8.3 — complete:** add versioned normalization/standardization metadata computed from
     training data only and applied identically to validation, test, and
     prediction inputs.
-  - **8.4:** add deterministic train/validation/test splitting, including
+  - **8.4 — complete:** add deterministic train/validation/test splitting, including
     stratification for categorical targets and reproducible split provenance.
-  - **8.5:** define missing-value policy and reject, impute, or transform values
+  - **8.5 — complete:** define missing-value policy and reject, impute, or transform values
     only through explicit persisted configuration.
 - **Milestone 9 — losses and configurable gradient descent:**
   - **9.1:** generalize the loss contract and add numerically stable binary and
@@ -107,7 +107,8 @@
     arithmetic, and exact deterministic tests.
   - **10.3:** version checkpoint persistence for optimizer buffers, schedule
     state, shuffle state, and early-stopping state; retain explicit backward
-    loading rules for version 1 gradient-descent checkpoints.
+    loading rules for version 1 gradient-descent and version 2 early-stopping
+    checkpoints.
   - **10.4:** add constant, step, exponential, and plateau-driven learning-rate
     schedules whose current value and next transition survive resume exactly.
   - **10.5:** integrate divergence detection, minimum-loss targets, maximum

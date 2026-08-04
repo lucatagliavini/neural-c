@@ -11,10 +11,12 @@
 #include <sys/stat.h>
 
 #include "neural/cli_options.h"
+#include "neural/data_import.h"
 #include "neural/defaults.h"
 #include "neural/digest.h"
 #include "neural/evaluation.h"
 #include "neural/init.h"
+#include "neural/input_document.h"
 #include "neural/model.h"
 #include "neural/parallel.h"
 #include "neural/parse.h"
@@ -114,6 +116,14 @@ enum option_index {
     OPTION_DATASET,
     OPTION_HISTORY,
     OPTION_STATE,
+    OPTION_INPUT_FILE,
+    OPTION_BATCH_SIZE,
+    OPTION_SCHEMA,
+    OPTION_VALIDATION_RATIO,
+    OPTION_TEST_RATIO,
+    OPTION_SPLIT_SEED,
+    OPTION_NORMALIZATION,
+    OPTION_MISSING,
     OPTION_COUNT
 };
 
@@ -136,7 +146,15 @@ static const NeuralOptionDefinition option_definitions[OPTION_COUNT] = {
     {"report-interval", '\0', NEURAL_OPTION_VALUE, 0},
     {"dataset", '\0', NEURAL_OPTION_VALUE, 0},
     {"history", '\0', NEURAL_OPTION_FLAG, 0},
-    {"state", '\0', NEURAL_OPTION_FLAG, 0}
+    {"state", '\0', NEURAL_OPTION_FLAG, 0},
+    {"input", '\0', NEURAL_OPTION_VALUE, 0},
+    {"batch-size", '\0', NEURAL_OPTION_VALUE, 0},
+    {"schema", '\0', NEURAL_OPTION_VALUE, 0},
+    {"validation-ratio", '\0', NEURAL_OPTION_VALUE, 0},
+    {"test-ratio", '\0', NEURAL_OPTION_VALUE, 0},
+    {"split-seed", '\0', NEURAL_OPTION_VALUE, 0},
+    {"normalization", '\0', NEURAL_OPTION_VALUE, 0},
+    {"missing", '\0', NEURAL_OPTION_VALUE, 0}
 };
 
 static void print_usage(FILE *stream)
@@ -146,7 +164,9 @@ static void print_usage(FILE *stream)
             "  %s init <project-directory> --inputs N --layer N:ACT [...]\n"
             "  %s train <project-directory>\n"
             "  %s predict <project-directory> <INPUT ...>\n"
+            "  %s predict <project-directory> --input FILE|- [--batch-size N]\n"
             "  %s evaluate <project-directory> [--dataset NAME]\n"
+            "  %s import-csv <project-directory> <CSV> --schema FILE\n"
             "  %s inspect <project-directory>\n"
             "  %s --version\n"
             "\nInit options:\n"
@@ -172,7 +192,18 @@ static void print_usage(FILE *stream)
             "                              a positive --report-interval\n"
             "      --dataset NAME         Evaluation dataset: train, validation,\n"
             "                              or test (default: test)\n"
-            "      --state                Inspect finalized/checkpoint state\n",
+            "      --state                Inspect finalized/checkpoint state\n"
+            "      --input FILE|-         Versioned prediction input document\n"
+            "      --batch-size N         Prediction stream batch; default: %zu\n"
+            "\nCSV import options:\n"
+            "      --schema FILE          Required versioned CSV schema\n"
+            "      --validation-ratio R   Validation fraction; default: 0\n"
+            "      --test-ratio R         Test fraction; default: 0\n"
+            "      --split-seed N         Deterministic split seed; default: 0\n"
+            "      --normalization NAME   none, standardize, or minmax\n"
+            "      --missing POLICY       reject or mean\n",
+            neural_name(),
+            neural_name(),
             neural_name(),
             neural_name(),
             neural_name(),
@@ -186,7 +217,8 @@ static void print_usage(FILE *stream)
             NEURAL_DEFAULT_INIT_LOSS,
             (size_t)NEURAL_DEFAULT_INIT_CHECKPOINT_INTERVAL,
             (size_t)NEURAL_DEFAULT_THREAD_COUNT,
-            (size_t)NEURAL_DEFAULT_REPORT_INTERVAL);
+            (size_t)NEURAL_DEFAULT_REPORT_INTERVAL,
+            (size_t)NEURAL_DEFAULT_PREDICTION_BATCH_SIZE);
 }
 
 typedef struct {
@@ -755,6 +787,218 @@ static int command_train(const char *directory,
     return EXIT_RUNTIME;
 }
 
+static int write_prediction_header(FILE *stream,
+                                   const NeuralPredictionSnapshot *snapshot,
+                                   size_t sample_count)
+{
+    if (fprintf(stream,
+                "%s predictions %zu\n"
+                "completed_epochs %zu\n",
+                NEURAL_FORMAT_MAGIC,
+                snapshot->format_version == 2U ? (size_t)2U : (size_t)1U,
+                snapshot->completed_epochs) < 0) {
+        return 0;
+    }
+    if (snapshot->format_version == 2U &&
+        fprintf(stream,
+                "selected_epoch %zu\n"
+                "target_epochs %zu\n"
+                "completion %s\n",
+                snapshot->selected_epoch,
+                snapshot->target_epochs,
+                snapshot->completion_reason ==
+                        NEURAL_COMPLETION_EARLY_STOPPING
+                    ? "early_stopping" : "target") < 0) {
+        return 0;
+    }
+    return fprintf(stream,
+                   "samples %zu\ninputs %zu\noutputs %zu\n",
+                   sample_count,
+                   snapshot->input_count,
+                   snapshot->output_count) >= 0;
+}
+
+static int write_prediction_samples(FILE *stream,
+                                    const NeuralPredictionSnapshot *snapshot,
+                                    const neural_real *outputs,
+                                    size_t first_sample,
+                                    size_t sample_count)
+{
+    size_t sample_index;
+
+    for (sample_index = 0U; sample_index < sample_count; sample_index++) {
+        size_t output_index;
+
+        if (fprintf(stream, "sample %zu", first_sample + sample_index) < 0) {
+            return 0;
+        }
+        for (output_index = 0U;
+             output_index < snapshot->output_count;
+             output_index++) {
+            if (fprintf(stream,
+                        " %.*g",
+                        DBL_DECIMAL_DIG,
+                        outputs[sample_index * snapshot->output_count +
+                                output_index]) < 0) {
+                return 0;
+            }
+        }
+        if (fputc('\n', stream) == EOF) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int copy_stream(FILE *source, FILE *destination, NeuralError *error)
+{
+    unsigned char buffer[8192];
+
+    if (fflush(source) != 0 || fseek(source, 0L, SEEK_SET) != 0) {
+        neural_error_set(error, "unable to finalize prediction output");
+        return 0;
+    }
+    for (;;) {
+        size_t count = fread(buffer, 1U, sizeof(buffer), source);
+
+        if (count != 0U && fwrite(buffer, 1U, count, destination) != count) {
+            neural_error_set(error, "unable to write prediction output");
+            return 0;
+        }
+        if (count < sizeof(buffer)) {
+            if (ferror(source) != 0) {
+                neural_error_set(error, "unable to read staged prediction output");
+                return 0;
+            }
+            break;
+        }
+    }
+    return 1;
+}
+
+static int command_predict_document(
+    const char *project,
+    const NeuralParsedOptions *options,
+    const NeuralExecutionConfig *execution,
+    NeuralPredictionSnapshot *snapshot,
+    NeuralError *error)
+{
+    NeuralInputDocument *document = NULL;
+    neural_real *inputs = NULL;
+    neural_real *outputs = NULL;
+    FILE *staged_output = NULL;
+    size_t batch_size = NEURAL_DEFAULT_PREDICTION_BATCH_SIZE;
+    size_t total_samples;
+    size_t first_sample = 0U;
+    size_t worker_count;
+    int complete = 0;
+    int result = EXIT_RUNTIME;
+
+    (void)project;
+    if (options->positional_count != 2U) {
+        fprintf(stderr,
+                "%s: --input cannot be combined with positional samples\n",
+                neural_name());
+        return EXIT_USAGE;
+    }
+    if (neural_option_is_present(options, OPTION_BATCH_SIZE) &&
+        (!neural_parse_size(neural_option_value(options, OPTION_BATCH_SIZE),
+                            &batch_size) ||
+         batch_size == 0U)) {
+        fprintf(stderr, "%s: batch-size must be a positive integer\n",
+                neural_name());
+        return EXIT_USAGE;
+    }
+    if (!neural_input_document_open(
+            neural_option_value(options, OPTION_INPUT_FILE),
+            &document,
+            error)) {
+        goto cleanup;
+    }
+    total_samples = neural_input_document_sample_count(document);
+    if (neural_input_document_input_count(document) != snapshot->input_count) {
+        neural_error_set(error,
+                         "input document width %zu does not match model width %zu",
+                         neural_input_document_input_count(document),
+                         snapshot->input_count);
+        goto cleanup;
+    }
+    if (batch_size > total_samples) {
+        batch_size = total_samples;
+    }
+    if (batch_size > SIZE_MAX / snapshot->input_count ||
+        batch_size * snapshot->input_count > SIZE_MAX / sizeof(*inputs) ||
+        batch_size > SIZE_MAX / snapshot->output_count ||
+        batch_size * snapshot->output_count > SIZE_MAX / sizeof(*outputs)) {
+        neural_error_set(error, "prediction batch dimensions are too large");
+        goto cleanup;
+    }
+    inputs = malloc(batch_size * snapshot->input_count * sizeof(*inputs));
+    outputs = malloc(batch_size * snapshot->output_count * sizeof(*outputs));
+    staged_output = tmpfile();
+    if (inputs == NULL || outputs == NULL || staged_output == NULL) {
+        neural_error_set(error, "unable to allocate streamed prediction state");
+        goto cleanup;
+    }
+    if (!write_prediction_header(staged_output, snapshot, total_samples)) {
+        neural_error_set(error, "unable to stage prediction output");
+        goto cleanup;
+    }
+    while (!complete) {
+        size_t loaded = 0U;
+
+        if (!neural_input_document_read(document,
+                                        inputs,
+                                        batch_size,
+                                        &loaded,
+                                        &complete,
+                                        error) ||
+            loaded == 0U ||
+            !neural_prediction_prepare_inputs(snapshot,
+                                               inputs,
+                                               loaded,
+                                               error) ||
+            !neural_prediction_run(snapshot,
+                                   inputs,
+                                   loaded,
+                                   execution,
+                                   outputs,
+                                   &worker_count,
+                                   error) ||
+            !write_prediction_samples(staged_output,
+                                      snapshot,
+                                      outputs,
+                                      first_sample,
+                                      loaded)) {
+            if (error->message[0] == '\0') {
+                neural_error_set(error, "unable to stage prediction samples");
+            }
+            goto cleanup;
+        }
+        first_sample += loaded;
+    }
+    if (first_sample != total_samples || fputs("end\n", staged_output) == EOF ||
+        !copy_stream(staged_output, stdout, error)) {
+        if (error->message[0] == '\0') {
+            neural_error_set(error, "prediction document was incomplete");
+        }
+        goto cleanup;
+    }
+    result = EXIT_OK;
+
+cleanup:
+    if (result != EXIT_OK && error->message[0] != '\0') {
+        fprintf(stderr, "%s: %s\n", neural_name(), error->message);
+    }
+    if (staged_output != NULL) {
+        (void)fclose(staged_output);
+    }
+    free(outputs);
+    free(inputs);
+    neural_input_document_close(document);
+    return result;
+}
+
 static int command_predict(const char *project,
                            const NeuralParsedOptions *options)
 {
@@ -783,6 +1027,19 @@ static int command_predict(const char *project,
     }
     if (!neural_project_prediction_load(project, &snapshot, &error)) {
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        goto cleanup;
+    }
+    if (neural_option_is_present(options, OPTION_INPUT_FILE)) {
+        result = command_predict_document(project,
+                                          options,
+                                          &execution,
+                                          &snapshot,
+                                          &error);
+        goto cleanup;
+    }
+    if (neural_option_is_present(options, OPTION_BATCH_SIZE)) {
+        fprintf(stderr, "%s: --batch-size requires --input\n", neural_name());
+        result = EXIT_USAGE;
         goto cleanup;
     }
     input_value_count = options->positional_count - 2U;
@@ -814,7 +1071,9 @@ static int command_predict(const char *project,
     for (value_index = 0U; value_index < input_value_count; value_index++) {
         const char *text = options->positionals[value_index + 2U];
 
-        if (!neural_parse_real(text, &inputs[value_index])) {
+        if (strcmp(text, "?") == 0) {
+            inputs[value_index] = NAN;
+        } else if (!neural_parse_real(text, &inputs[value_index])) {
             fprintf(stderr,
                     "%s: invalid prediction input %zu: '%s'\n",
                     neural_name(),
@@ -823,6 +1082,13 @@ static int command_predict(const char *project,
             result = EXIT_USAGE;
             goto cleanup;
         }
+    }
+    if (!neural_prediction_prepare_inputs(&snapshot,
+                                          inputs,
+                                          sample_count,
+                                          &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        goto cleanup;
     }
     if (!neural_prediction_run(&snapshot,
                                inputs,
@@ -834,34 +1100,16 @@ static int command_predict(const char *project,
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
         goto cleanup;
     }
-    printf("%s predictions %zu\n",
-           NEURAL_FORMAT_MAGIC,
-           snapshot.format_version == 2U ? (size_t)2U : (size_t)1U);
-    printf("completed_epochs %zu\n", snapshot.completed_epochs);
-    if (snapshot.format_version == 2U) {
-        printf("selected_epoch %zu\n", snapshot.selected_epoch);
-        printf("target_epochs %zu\n", snapshot.target_epochs);
-        printf("completion %s\n",
-               snapshot.completion_reason == NEURAL_COMPLETION_EARLY_STOPPING
-                   ? "early_stopping" : "target");
+    if (!write_prediction_header(stdout, &snapshot, sample_count) ||
+        !write_prediction_samples(stdout,
+                                  &snapshot,
+                                  outputs,
+                                  0U,
+                                  sample_count) ||
+        fputs("end\n", stdout) == EOF) {
+        fprintf(stderr, "%s: unable to write prediction output\n", neural_name());
+        goto cleanup;
     }
-    printf("samples %zu\n", sample_count);
-    printf("inputs %zu\n", snapshot.input_count);
-    printf("outputs %zu\n", snapshot.output_count);
-    for (value_index = 0U; value_index < sample_count; value_index++) {
-        size_t output_index;
-
-        printf("sample %zu", value_index);
-        for (output_index = 0U;
-             output_index < snapshot.output_count;
-             output_index++) {
-            printf(" %.*g",
-                   DBL_DECIMAL_DIG,
-                   outputs[value_index * snapshot.output_count + output_index]);
-        }
-        putchar('\n');
-    }
-    puts("end");
     (void)worker_count;
     result = EXIT_OK;
 
@@ -870,6 +1118,88 @@ cleanup:
     free(inputs);
     neural_prediction_snapshot_free(&snapshot);
     return result;
+}
+
+static int command_import_csv(const char *project,
+                              const char *csv_path,
+                              const NeuralParsedOptions *options)
+{
+    NeuralDataImportConfig config = {
+        NULL,
+        0.0,
+        0.0,
+        UINT64_C(0),
+        NEURAL_NORMALIZATION_NONE,
+        NEURAL_MISSING_REJECT
+    };
+    NeuralDataImportResult imported;
+    NeuralError error;
+
+    if (!neural_option_is_present(options, OPTION_SCHEMA)) {
+        fprintf(stderr, "%s: import-csv requires --schema FILE\n",
+                neural_name());
+        return EXIT_USAGE;
+    }
+    config.schema_path = neural_option_value(options, OPTION_SCHEMA);
+    if (neural_option_is_present(options, OPTION_VALIDATION_RATIO) &&
+        !neural_parse_real(neural_option_value(options,
+                                               OPTION_VALIDATION_RATIO),
+                           &config.validation_ratio)) {
+        fprintf(stderr, "%s: validation-ratio must be finite\n", neural_name());
+        return EXIT_USAGE;
+    }
+    if (neural_option_is_present(options, OPTION_TEST_RATIO) &&
+        !neural_parse_real(neural_option_value(options, OPTION_TEST_RATIO),
+                           &config.test_ratio)) {
+        fprintf(stderr, "%s: test-ratio must be finite\n", neural_name());
+        return EXIT_USAGE;
+    }
+    if (neural_option_is_present(options, OPTION_SPLIT_SEED) &&
+        !neural_parse_uint64(neural_option_value(options, OPTION_SPLIT_SEED),
+                             &config.split_seed)) {
+        fprintf(stderr, "%s: split-seed must be an unsigned integer\n",
+                neural_name());
+        return EXIT_USAGE;
+    }
+    if (neural_option_is_present(options, OPTION_NORMALIZATION) &&
+        !neural_normalization_from_name(
+            neural_option_value(options, OPTION_NORMALIZATION),
+            &config.normalization)) {
+        fprintf(stderr,
+                "%s: normalization must be none, standardize, or minmax\n",
+                neural_name());
+        return EXIT_USAGE;
+    }
+    if (neural_option_is_present(options, OPTION_MISSING) &&
+        !neural_missing_policy_from_name(
+            neural_option_value(options, OPTION_MISSING),
+            &config.missing_policy)) {
+        fprintf(stderr, "%s: missing must be reject or mean\n", neural_name());
+        return EXIT_USAGE;
+    }
+    if (config.validation_ratio < 0.0 || config.test_ratio < 0.0 ||
+        config.validation_ratio + config.test_ratio >= 1.0) {
+        fprintf(stderr,
+                "%s: split ratios must be non-negative and sum to less than 1\n",
+                neural_name());
+        return EXIT_USAGE;
+    }
+    if (!neural_data_import_csv(project,
+                                csv_path,
+                                &config,
+                                &imported,
+                                &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        return EXIT_RUNTIME;
+    }
+    printf("CSV import complete: %zu samples, train %zu, validation %zu, "
+           "test %zu, stratified %s\n",
+           imported.total_samples,
+           imported.training_samples,
+           imported.validation_samples,
+           imported.test_samples,
+           imported.stratified ? "yes" : "no");
+    return EXIT_OK;
 }
 
 static int command_evaluate(const char *project,
@@ -1234,6 +1564,25 @@ static int command_inspect(const char *directory, int include_state)
         printf("Validation samples: %zu\n",
                project.validation.sample_count);
     }
+    if (project.has_preprocessing) {
+        printf("Preprocessing: present\n");
+        printf("Normalization: %s\n",
+               neural_normalization_name(project.preprocessing.normalization));
+        printf("Missing policy: %s\n",
+               neural_missing_policy_name(project.preprocessing.missing_policy));
+        printf("Split seed: %" PRIu64 "\n",
+               project.preprocessing.split_seed);
+        printf("Validation ratio: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.preprocessing.validation_ratio);
+        printf("Test ratio: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.preprocessing.test_ratio);
+        printf("Stratified split: %s\n",
+               project.preprocessing.stratified ? "yes" : "no");
+    } else {
+        printf("Preprocessing: absent (identity)\n");
+    }
     printf("Model digest: sha256:%s\n", digests.model);
     printf("Dataset digest: sha256:%s\n", digests.dataset);
     printf("Training digest: sha256:%s\n", digests.training);
@@ -1315,6 +1664,44 @@ int main(int argc, char **argv)
                              OPTION_RESUME)) {
         fprintf(stderr,
                 "%s: initialization options are valid only with init\n",
+                neural_name());
+        neural_options_free(&options);
+        return EXIT_USAGE;
+    }
+    if ((neural_option_is_present(&options, OPTION_INPUT_FILE) ||
+         neural_option_is_present(&options, OPTION_BATCH_SIZE)) &&
+        strcmp(command, "predict") != 0) {
+        fprintf(stderr,
+                "%s: --input and --batch-size are valid only with predict\n",
+                neural_name());
+        neural_options_free(&options);
+        return EXIT_USAGE;
+    }
+    if (strcmp(command, "import-csv") == 0) {
+        int result;
+
+        if (options.positional_count != 3U) {
+            fprintf(stderr,
+                    "%s: import-csv requires a project directory and CSV file\n",
+                    neural_name());
+            neural_options_free(&options);
+            return EXIT_USAGE;
+        }
+        if (has_options_in_range(&options, OPTION_RESUME, OPTION_SCHEMA)) {
+            fprintf(stderr,
+                    "%s: training and execution options are invalid with import-csv\n",
+                    neural_name());
+            neural_options_free(&options);
+            return EXIT_USAGE;
+        }
+        result = command_import_csv(options.positionals[1],
+                                    options.positionals[2],
+                                    &options);
+        neural_options_free(&options);
+        return result;
+    }
+    if (has_options_in_range(&options, OPTION_SCHEMA, OPTION_COUNT)) {
+        fprintf(stderr, "%s: CSV import options are valid only with import-csv\n",
                 neural_name());
         neural_options_free(&options);
         return EXIT_USAGE;

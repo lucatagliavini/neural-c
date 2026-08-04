@@ -18,6 +18,10 @@ are rejected. Values use the locale-independent finite decimal grammar shared
 by project files. Use the option terminator when a value begins with `-`, for
 example `predict PROJECT --threads 2 -- -1 0`.
 
+Bulk input is available as `predict PROJECT --input FILE|- --batch-size N`.
+The versioned document, bounded-memory behavior, explicit `?` missing token,
+and all-or-nothing output rule are specified in `data-interfaces.md`.
+
 `--threads N` is execution-only. The effective worker count is the smaller of
 the positive requested count and the sample count. It never changes sample
 boundaries, values, ordering, persistence, or output text.
@@ -33,8 +37,9 @@ their observed, target, selected, and completion relationship. A missing,
 malformed, incomplete, or incompatible weights file fails before inference.
 
 The shared lock is retained until all project and weights data have been copied
-and validated. It is then released before inference. The resulting model is an
-immutable in-memory snapshot, so a later training command cannot change an
+and validated. It is then released before inference. The resulting model and
+any persisted preprocessing form an immutable in-memory snapshot, so a later
+training command cannot change an
 already running prediction. Prediction fails immediately if a writer holds the
 lock while the snapshot is being loaded.
 

@@ -23,6 +23,8 @@ Prediction snapshots and versioned output are defined in
 [`docs/prediction.md`](docs/prediction.md).
 Native and emulated architecture qualification is defined in
 [`docs/runtime-validation.md`](docs/runtime-validation.md).
+Bulk input, CSV schemas, splitting, normalization, and missing-value ownership
+are defined in [`docs/data-interfaces.md`](docs/data-interfaces.md).
 
 ## Project format
 
@@ -48,6 +50,19 @@ dense 4 elu alpha=1
 rows in the form `0 1 -> 1`. The loader derives the output width from the final
 layer and validates every dataset row before execution. Blank lines and `#`
 comments are accepted; unknown or duplicate properties are rejected.
+
+Strict CSV ingestion can build the native datasets and persisted preprocessing
+without column guessing:
+
+```sh
+./neural-c.sh import-csv projects/iris iris.csv \
+    --schema iris-schema.txt \
+    --validation-ratio 0.2 --test-ratio 0.2 --split-seed 42 \
+    --normalization standardize --missing mean
+```
+
+Categorical schemas produce a deterministic stratified split. Statistics and
+imputation values are learned from training rows only and reused by prediction.
 
 ## Build and test
 
@@ -162,6 +177,14 @@ model input width:
 
 ```sh
 ./neural-c.sh predict projects/xor 0 0 0 1 1 0 1 1 --threads 4
+```
+
+For large inference jobs, use a versioned input document from a file or stdin;
+`--batch-size` bounds working memory without changing output order:
+
+```sh
+./neural-c.sh predict projects/xor --input samples.txt --batch-size 1024 \
+    --threads 4
 ```
 
 The versioned result reports the loaded weights' cumulative epoch count and
