@@ -23,6 +23,10 @@ Use the root `Makefile`:
 - `make test-defaults` — validate supported compile-time overrides.
 - `make test-sanitize` — run native tests with AddressSanitizer and UBSan.
 - `make test-thread-sanitize` — run concurrency tests with ThreadSanitizer when supported.
+- `make test-ppc64le` — cross-build and run the C suite under QEMU user-mode.
+- `make test-ppc64le-cli` — run CLI integration under emulated ppc64le.
+- `make test-cross-runtime` — verify bidirectional x86-64/ppc64le interoperability.
+- `make check-cross-runtime` — run the complete emulated cross-runtime qualification.
 - `make check` — run tests and validate the Bash launcher.
 - `make verify-binaries` — verify both generated ELF architectures.
 - `make clean` — remove generated build artifacts only.
@@ -43,7 +47,12 @@ Add tests with every behavior change and bug fix. Name test files after the unit
 
 History uses short imperative subjects. Keep commits focused (for example, `Add tensor allocation checks`). Pull requests should explain motivation, verification, and linked issues; attach logs or screenshots only when useful.
 
-Before changing model execution, training, prediction, or persistence, read `docs/model-runtime.md`, `docs/training-engine.md`, `docs/parallel-execution.md`, `docs/project-locking.md`, `docs/persistence-format.md`, `docs/training-resume.md`, `docs/prediction.md`, and `docs/roadmap.md`. Preserve documented parameter layout, deterministic reduction order, and file ownership.
+Before changing model execution, training, prediction, persistence, or runtime
+qualification, read `docs/model-runtime.md`, `docs/training-engine.md`,
+`docs/parallel-execution.md`, `docs/project-locking.md`,
+`docs/persistence-format.md`, `docs/training-resume.md`, `docs/prediction.md`,
+`docs/runtime-validation.md`, and `docs/roadmap.md`. Preserve documented
+parameter layout, deterministic reduction order, and file ownership.
 
 ## Session Handoffs
 

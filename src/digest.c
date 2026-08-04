@@ -83,18 +83,19 @@ static void update_real(NeuralSha256 *context, neural_real value)
     update_u64(context, bits);
 }
 
-static int validate_dataset(const NeuralProject *project, NeuralError *error)
+static int validate_dataset(const NeuralModelSpec *model,
+                            const NeuralDataset *dataset,
+                            NeuralError *error)
 {
-    const NeuralDataset *dataset = &project->dataset;
     size_t expected_output_count;
     size_t input_value_count;
     size_t output_value_count;
     size_t index;
 
     expected_output_count =
-        project->model.layers[project->model.layer_count - 1U].neuron_count;
+        model->layers[model->layer_count - 1U].neuron_count;
     if (dataset->sample_count == 0U ||
-        dataset->input_count != project->model.input_count ||
+        dataset->input_count != model->input_count ||
         dataset->output_count != expected_output_count ||
         dataset->sample_count > SIZE_MAX / dataset->input_count ||
         dataset->sample_count > SIZE_MAX / dataset->output_count) {
@@ -212,6 +213,7 @@ static void digest_dataset(const NeuralDataset *dataset,
 }
 
 static void digest_training(const NeuralTrainingConfig *training,
+                            const NeuralDataset *validation,
                             char output[NEURAL_SHA256_TEXT_CAPACITY])
 {
     NeuralSha256 context;
@@ -225,6 +227,15 @@ static void digest_training(const NeuralTrainingConfig *training,
     update_u64(&context, training->seed);
     update_text(&context, neural_loss_name(training->loss));
     update_size(&context, training->checkpoint_interval);
+    if (training->early_stopping_patience != 0U) {
+        char validation_digest[NEURAL_SHA256_TEXT_CAPACITY];
+
+        digest_dataset(validation, validation_digest);
+        update_text(&context, "early_stopping");
+        update_size(&context, training->early_stopping_patience);
+        update_real(&context, training->early_stopping_min_delta);
+        update_text(&context, validation_digest);
+    }
     neural_sha256_final(&context, digest);
     digest_to_hex(digest, output);
 }
@@ -239,10 +250,21 @@ int neural_project_digests_compute(const NeuralProject *project,
     }
     if (!digest_model(&project->model, digests->model, error) ||
         !neural_training_config_validate(&project->training, error) ||
-        !validate_dataset(project, error)) {
+        !validate_dataset(&project->model, &project->dataset, error)) {
+        return 0;
+    }
+    if (project->training.early_stopping_patience != 0U &&
+        (!project->has_validation ||
+         !validate_dataset(&project->model, &project->validation, error))) {
+        if (!project->has_validation) {
+            neural_error_set(error,
+                             "early stopping requires validation dataset");
+        }
         return 0;
     }
     digest_dataset(&project->dataset, digests->dataset);
-    digest_training(&project->training, digests->training);
+    digest_training(&project->training,
+                    project->has_validation ? &project->validation : NULL,
+                    digests->training);
     return 1;
 }

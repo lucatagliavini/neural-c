@@ -100,6 +100,13 @@ weights. Repeated refinements apply the same transition from the latest
 completed count. Gradient descent has no additional optimizer buffers; its run
 state and model RNG state are reset deterministically for each refinement.
 
+With early stopping, the checkpoint atomically owns both the current and best
+model plus the best epoch/loss and stale count. Resume restores that full state
+and continues the original patience sequence. Final weights own the selected
+best model and distinguish the last observed epoch from the selected epoch.
+An early-finalized version 2 weights file is a valid additional-training
+baseline even when its observed epoch count is below the configured target.
+
 ## Text Metadata
 
 The checkpoint header and metadata have this shape before the layer

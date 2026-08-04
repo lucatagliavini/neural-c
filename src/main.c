@@ -3,22 +3,27 @@
 #include <errno.h>
 #include <float.h>
 #include <inttypes.h>
+#include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "neural/cli_options.h"
 #include "neural/defaults.h"
 #include "neural/digest.h"
+#include "neural/evaluation.h"
 #include "neural/init.h"
 #include "neural/model.h"
 #include "neural/parallel.h"
 #include "neural/parse.h"
+#include "neural/persistence.h"
 #include "neural/project.h"
 #include "neural/training.h"
 #include "neural/version.h"
 #include "predict_project.h"
+#include "path.h"
 #include "project_lock.h"
 #include "train_project.h"
 
@@ -100,9 +105,15 @@ enum option_index {
     OPTION_SEED,
     OPTION_LOSS,
     OPTION_CHECKPOINT_INTERVAL,
+    OPTION_EARLY_STOPPING_PATIENCE,
+    OPTION_EARLY_STOPPING_MIN_DELTA,
     OPTION_RESUME,
     OPTION_ADDITIONAL_EPOCHS,
     OPTION_THREADS,
+    OPTION_REPORT_INTERVAL,
+    OPTION_DATASET,
+    OPTION_HISTORY,
+    OPTION_STATE,
     OPTION_COUNT
 };
 
@@ -117,9 +128,15 @@ static const NeuralOptionDefinition option_definitions[OPTION_COUNT] = {
     {"seed", '\0', NEURAL_OPTION_VALUE, 0},
     {"loss", '\0', NEURAL_OPTION_VALUE, 0},
     {"checkpoint-interval", '\0', NEURAL_OPTION_VALUE, 0},
+    {"early-stopping-patience", '\0', NEURAL_OPTION_VALUE, 0},
+    {"early-stopping-min-delta", '\0', NEURAL_OPTION_VALUE, 0},
     {"resume", '\0', NEURAL_OPTION_FLAG, 0},
     {"additional-epochs", '\0', NEURAL_OPTION_VALUE, 0},
-    {"threads", 'j', NEURAL_OPTION_VALUE, 0}
+    {"threads", 'j', NEURAL_OPTION_VALUE, 0},
+    {"report-interval", '\0', NEURAL_OPTION_VALUE, 0},
+    {"dataset", '\0', NEURAL_OPTION_VALUE, 0},
+    {"history", '\0', NEURAL_OPTION_FLAG, 0},
+    {"state", '\0', NEURAL_OPTION_FLAG, 0}
 };
 
 static void print_usage(FILE *stream)
@@ -129,6 +146,7 @@ static void print_usage(FILE *stream)
             "  %s init <project-directory> --inputs N --layer N:ACT [...]\n"
             "  %s train <project-directory>\n"
             "  %s predict <project-directory> <INPUT ...>\n"
+            "  %s evaluate <project-directory> [--dataset NAME]\n"
             "  %s inspect <project-directory>\n"
             "  %s --version\n"
             "\nInit options:\n"
@@ -141,11 +159,21 @@ static void print_usage(FILE *stream)
             "      --loss NAME            Default: %s\n"
             "      --checkpoint-interval N Periodic interval; 0 disables\n"
             "                              Default: %zu\n"
+            "      --early-stopping-patience N Validation patience; 0 disables\n"
+            "      --early-stopping-min-delta VALUE Minimum validation improvement\n"
             "\nTraining continuation:\n"
             "      --resume                Resume checkpoint.txt\n"
             "      --additional-epochs N  Refine weights.txt\n"
             "\nExecution options:\n"
-            "  -j, --threads N            Worker threads; default: %zu\n",
+            "  -j, --threads N            Worker threads; default: %zu\n"
+            "      --report-interval N    Training progress; 0 disables\n"
+            "                              Default: %zu\n"
+            "      --history              Write progress to history.txt; requires\n"
+            "                              a positive --report-interval\n"
+            "      --dataset NAME         Evaluation dataset: train, validation,\n"
+            "                              or test (default: test)\n"
+            "      --state                Inspect finalized/checkpoint state\n",
+            neural_name(),
             neural_name(),
             neural_name(),
             neural_name(),
@@ -157,7 +185,180 @@ static void print_usage(FILE *stream)
             (uint64_t)NEURAL_DEFAULT_INIT_SEED,
             NEURAL_DEFAULT_INIT_LOSS,
             (size_t)NEURAL_DEFAULT_INIT_CHECKPOINT_INTERVAL,
-            (size_t)NEURAL_DEFAULT_THREAD_COUNT);
+            (size_t)NEURAL_DEFAULT_THREAD_COUNT,
+            (size_t)NEURAL_DEFAULT_REPORT_INTERVAL);
+}
+
+typedef struct {
+    size_t interval;
+    neural_real best_loss;
+    neural_real last_reported_loss;
+    int has_best;
+    int has_reported;
+    int history_enabled;
+    int history_append;
+    int history_failed;
+    const char *directory;
+    char *history_path;
+    FILE *history;
+} TrainingProgress;
+
+static void training_progress_close(TrainingProgress *progress)
+{
+    if (progress != NULL) {
+        if (progress->history != NULL) {
+            (void)fclose(progress->history);
+            progress->history = NULL;
+        }
+        free(progress->history_path);
+        progress->history_path = NULL;
+    }
+}
+
+static void write_training_history(TrainingProgress *progress,
+                                   const NeuralEpochReport *report)
+{
+    long position;
+
+    if (!progress->history_enabled || progress->history_failed) {
+        return;
+    }
+    if (progress->history == NULL) {
+        progress->history_path = neural_path_join(
+            progress->directory, NEURAL_DEFAULT_HISTORY_FILENAME, NULL);
+        if (progress->history_path != NULL) {
+            progress->history = fopen(progress->history_path,
+                                      progress->history_append ? "a+" : "w");
+        }
+        if (progress->history == NULL) {
+            fprintf(stderr,
+                    "%s: warning: unable to open training history\n",
+                    neural_name());
+            progress->history_failed = 1;
+            return;
+        }
+        if (fseek(progress->history, 0L, SEEK_END) != 0 ||
+            (position = ftell(progress->history)) < 0L) {
+            fprintf(stderr,
+                    "%s: warning: unable to inspect training history\n",
+                    neural_name());
+            progress->history_failed = 1;
+            return;
+        }
+        if (position == 0L &&
+            fprintf(progress->history,
+                    "%s history %d\n",
+                    NEURAL_FORMAT_MAGIC,
+                    NEURAL_FORMAT_VERSION) < 0) {
+            progress->history_failed = 1;
+            return;
+        }
+    }
+    if (fprintf(progress->history,
+                "epoch %zu target %zu loss %.*g best %.*g",
+                report->completed_epochs,
+                report->target_epochs,
+                DBL_DECIMAL_DIG,
+                report->loss,
+                DBL_DECIMAL_DIG,
+                progress->best_loss) < 0 ||
+        (report->has_validation_loss &&
+         fprintf(progress->history,
+                 " validation_loss %.*g best_validation_loss %.*g",
+                 DBL_DECIMAL_DIG,
+                 report->validation_loss,
+                 DBL_DECIMAL_DIG,
+                 report->best_validation_loss) < 0) ||
+        fputc('\n', progress->history) == EOF ||
+        fflush(progress->history) != 0) {
+        fprintf(stderr,
+                "%s: warning: unable to write training history\n",
+                neural_name());
+        progress->history_failed = 1;
+    }
+}
+
+static int report_training_progress(const NeuralEpochReport *report,
+                                    void *context,
+                                    NeuralError *error)
+{
+    TrainingProgress *progress = context;
+    neural_real convergence_loss;
+    int should_report;
+
+    if (report == NULL || progress == NULL || progress->interval == 0U ||
+        report->completed_epochs == 0U || report->target_epochs == 0U ||
+        report->completed_epochs > report->target_epochs ||
+        !isfinite(report->loss)) {
+        neural_error_set(error, "training progress report is invalid");
+        return 0;
+    }
+    convergence_loss = report->has_validation_loss
+                           ? report->validation_loss
+                           : report->loss;
+    if (report->has_validation_loss) {
+        progress->best_loss = report->best_validation_loss;
+        progress->has_best = 1;
+    } else if (!progress->has_best || convergence_loss < progress->best_loss) {
+        progress->best_loss = convergence_loss;
+        progress->has_best = 1;
+    }
+    should_report = report->completed_epochs == report->target_epochs ||
+                    report->stopped_early ||
+                    report->completed_epochs % progress->interval == 0U;
+    if (!should_report) {
+        return 1;
+    }
+    if (fprintf(stderr,
+                "Training progress: epoch %zu/%zu, loss %.*g, best %.*g",
+                report->completed_epochs,
+                report->target_epochs,
+                DBL_DECIMAL_DIG,
+                report->loss,
+                DBL_DECIMAL_DIG,
+                progress->best_loss) < 0) {
+        neural_error_set(error, "unable to write training progress");
+        return 0;
+    }
+    if (report->has_validation_loss &&
+        fprintf(stderr,
+                ", validation %.*g, best validation %.*g",
+                DBL_DECIMAL_DIG,
+                report->validation_loss,
+                DBL_DECIMAL_DIG,
+                report->best_validation_loss) < 0) {
+        neural_error_set(error, "unable to write training progress");
+        return 0;
+    }
+    if (progress->has_reported) {
+        neural_real improvement =
+            progress->last_reported_loss - convergence_loss;
+        neural_real denominator = fabs(progress->last_reported_loss);
+        neural_real relative = denominator == 0.0
+                                   ? 0.0
+                                   : improvement / denominator;
+
+        if (fprintf(stderr,
+                    ", improvement %.*g, relative %.*g",
+                    DBL_DECIMAL_DIG,
+                    improvement,
+                    DBL_DECIMAL_DIG,
+                    relative) < 0) {
+            neural_error_set(error, "unable to write training progress");
+            return 0;
+        }
+    } else if (fputs(", improvement n/a, relative n/a", stderr) == EOF) {
+        neural_error_set(error, "unable to write training progress");
+        return 0;
+    }
+    if (fputc('\n', stderr) == EOF) {
+        neural_error_set(error, "unable to write training progress");
+        return 0;
+    }
+    write_training_history(progress, report);
+    progress->last_reported_loss = convergence_loss;
+    progress->has_reported = 1;
+    return 1;
 }
 
 static int parse_layer_option(const char *text,
@@ -276,7 +477,9 @@ static int command_init(const char *directory,
         NEURAL_DEFAULT_INIT_LEARNING_RATE,
         NEURAL_DEFAULT_INIT_SEED,
         NEURAL_LOSS_MSE,
-        NEURAL_DEFAULT_INIT_CHECKPOINT_INTERVAL
+        NEURAL_DEFAULT_INIT_CHECKPOINT_INTERVAL,
+        NEURAL_DEFAULT_INIT_EARLY_STOPPING_PATIENCE,
+        NEURAL_DEFAULT_INIT_EARLY_STOPPING_MIN_DELTA
     };
     NeuralError error;
     const char *loss_name;
@@ -358,6 +561,28 @@ static int command_init(const char *directory,
                          "checkpoint-interval must be a non-negative integer");
         goto invalid;
     }
+    if (neural_option_is_present(options, OPTION_EARLY_STOPPING_PATIENCE) &&
+        !neural_parse_size(
+            neural_option_value(options, OPTION_EARLY_STOPPING_PATIENCE),
+            &training.early_stopping_patience)) {
+        neural_error_set(
+            &error,
+            "early-stopping-patience must be a non-negative integer");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_EARLY_STOPPING_MIN_DELTA) &&
+        (!neural_parse_real(
+             neural_option_value(options, OPTION_EARLY_STOPPING_MIN_DELTA),
+             &training.early_stopping_min_delta) ||
+         training.early_stopping_min_delta < 0.0)) {
+        neural_error_set(
+            &error,
+            "early-stopping-min-delta must be finite and non-negative");
+        goto invalid;
+    }
+    if (!neural_training_config_validate(&training, &error)) {
+        goto invalid;
+    }
 
     if (!neural_project_initialize(
             directory,
@@ -398,11 +623,26 @@ static int command_train(const char *directory,
 {
     NeuralTrainingRequest request = {NEURAL_TRAIN_FRESH, 0U};
     NeuralExecutionConfig execution = {NEURAL_DEFAULT_THREAD_COUNT};
+    TrainingProgress progress = {
+        NEURAL_DEFAULT_REPORT_INTERVAL, 0.0, 0.0, 0, 0,
+        0, 0, 0, directory, NULL, NULL
+    };
     NeuralTrainingResult result;
     NeuralError error;
     TrainingSignalGuard signal_guard;
     int interrupted_signal = 0;
     int trained;
+
+    if (neural_option_is_present(options, OPTION_DATASET)) {
+        fprintf(stderr, "%s: --dataset is valid only with evaluate\n",
+                neural_name());
+        return EXIT_USAGE;
+    }
+    if (neural_option_is_present(options, OPTION_STATE)) {
+        fprintf(stderr, "%s: --state is valid only with inspect\n",
+                neural_name());
+        return EXIT_USAGE;
+    }
 
     if (neural_option_is_present(options, OPTION_RESUME) &&
         neural_option_is_present(options, OPTION_ADDITIONAL_EPOCHS)) {
@@ -438,6 +678,24 @@ static int command_train(const char *directory,
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
         return EXIT_USAGE;
     }
+    if (neural_option_is_present(options, OPTION_REPORT_INTERVAL) &&
+        !neural_parse_size(
+            neural_option_value(options, OPTION_REPORT_INTERVAL),
+            &progress.interval)) {
+        fprintf(stderr,
+                "%s: report-interval must be a non-negative integer\n",
+                neural_name());
+        return EXIT_USAGE;
+    }
+    progress.history_enabled =
+        neural_option_is_present(options, OPTION_HISTORY);
+    progress.history_append = request.mode != NEURAL_TRAIN_FRESH;
+    if (progress.history_enabled && progress.interval == 0U) {
+        fprintf(stderr,
+                "%s: --history requires a positive --report-interval\n",
+                neural_name());
+        return EXIT_USAGE;
+    }
     if (request.mode == NEURAL_TRAIN_FRESH ||
         request.mode == NEURAL_TRAIN_RESUME ||
         request.mode == NEURAL_TRAIN_ADDITIONAL) {
@@ -450,6 +708,8 @@ static int command_train(const char *directory,
                 directory,
                 &execution,
                 &training_stop_signal,
+                progress.interval == 0U ? NULL : report_training_progress,
+                &progress,
                 &interrupted_signal,
                 &result,
                 &error);
@@ -458,6 +718,8 @@ static int command_train(const char *directory,
                 directory,
                 &execution,
                 &training_stop_signal,
+                progress.interval == 0U ? NULL : report_training_progress,
+                &progress,
                 &interrupted_signal,
                 &result,
                 &error);
@@ -467,11 +729,14 @@ static int command_train(const char *directory,
                 &execution,
                 request.additional_epochs,
                 &training_stop_signal,
+                progress.interval == 0U ? NULL : report_training_progress,
+                &progress,
                 &interrupted_signal,
                 &result,
                 &error);
         }
         training_signals_restore(&signal_guard);
+        training_progress_close(&progress);
         if (!trained) {
             fprintf(stderr, "%s: %s\n", neural_name(), error.message);
             if (interrupted_signal > 0 && interrupted_signal < 128) {
@@ -569,8 +834,17 @@ static int command_predict(const char *project,
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
         goto cleanup;
     }
-    printf("%s predictions %d\n", NEURAL_FORMAT_MAGIC, NEURAL_FORMAT_VERSION);
+    printf("%s predictions %zu\n",
+           NEURAL_FORMAT_MAGIC,
+           snapshot.format_version == 2U ? (size_t)2U : (size_t)1U);
     printf("completed_epochs %zu\n", snapshot.completed_epochs);
+    if (snapshot.format_version == 2U) {
+        printf("selected_epoch %zu\n", snapshot.selected_epoch);
+        printf("target_epochs %zu\n", snapshot.target_epochs);
+        printf("completion %s\n",
+               snapshot.completion_reason == NEURAL_COMPLETION_EARLY_STOPPING
+                   ? "early_stopping" : "target");
+    }
     printf("samples %zu\n", sample_count);
     printf("inputs %zu\n", snapshot.input_count);
     printf("outputs %zu\n", snapshot.output_count);
@@ -598,7 +872,279 @@ cleanup:
     return result;
 }
 
-static int command_inspect(const char *directory)
+static int command_evaluate(const char *project,
+                            const NeuralParsedOptions *options)
+{
+    NeuralExecutionConfig execution = {NEURAL_DEFAULT_THREAD_COUNT};
+    NeuralEvaluationSnapshot snapshot = NEURAL_EVALUATION_SNAPSHOT_INITIALIZER;
+    NeuralEvaluationResult evaluation = {0};
+    neural_real *outputs = NULL;
+    NeuralError error;
+    const char *dataset_name = neural_option_is_present(options, OPTION_DATASET)
+                                   ? neural_option_value(options, OPTION_DATASET)
+                                   : "test";
+    const char *dataset_filename;
+    size_t output_value_count;
+    size_t worker_count;
+    size_t class_index;
+    int result = EXIT_RUNTIME;
+
+    if (strcmp(dataset_name, "train") == 0) {
+        dataset_filename = NEURAL_DEFAULT_DATASET_FILENAME;
+    } else if (strcmp(dataset_name, "validation") == 0) {
+        dataset_filename = NEURAL_DEFAULT_VALIDATION_FILENAME;
+    } else if (strcmp(dataset_name, "test") == 0) {
+        dataset_filename = NEURAL_DEFAULT_TEST_FILENAME;
+    } else {
+        fprintf(stderr,
+                "%s: dataset must be train, validation, or test\n",
+                neural_name());
+        return EXIT_USAGE;
+    }
+    if (neural_option_is_present(options, OPTION_THREADS) &&
+        !neural_parse_size(neural_option_value(options, OPTION_THREADS),
+                           &execution.thread_count)) {
+        fprintf(stderr, "%s: threads must be a positive integer\n", neural_name());
+        return EXIT_USAGE;
+    }
+    if (!neural_execution_config_validate(&execution, &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        return EXIT_USAGE;
+    }
+    if (!neural_project_evaluation_load(project,
+                                        dataset_filename,
+                                        &snapshot,
+                                        &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        goto cleanup;
+    }
+    if (snapshot.dataset.sample_count > SIZE_MAX /
+                                            snapshot.dataset.output_count ||
+        snapshot.dataset.sample_count * snapshot.dataset.output_count >
+            SIZE_MAX / sizeof(*outputs)) {
+        fprintf(stderr, "%s: evaluation dataset is too large\n", neural_name());
+        goto cleanup;
+    }
+    output_value_count = snapshot.dataset.sample_count *
+                         snapshot.dataset.output_count;
+    outputs = malloc(output_value_count * sizeof(*outputs));
+    if (outputs == NULL) {
+        fprintf(stderr, "%s: unable to allocate evaluation outputs\n",
+                neural_name());
+        goto cleanup;
+    }
+    if (!neural_prediction_run(&snapshot.prediction,
+                               snapshot.dataset.inputs,
+                               snapshot.dataset.sample_count,
+                               &execution,
+                               outputs,
+                               &worker_count,
+                               &error) ||
+        !neural_evaluation_compute(snapshot.loss,
+                                   snapshot.output_activation,
+                                   outputs,
+                                   snapshot.dataset.outputs,
+                                   snapshot.dataset.sample_count,
+                                   snapshot.dataset.output_count,
+                                   &evaluation,
+                                   &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        goto cleanup;
+    }
+    printf("%s evaluation %zu\n",
+           NEURAL_FORMAT_MAGIC,
+           snapshot.prediction.format_version == 2U
+               ? (size_t)2U : (size_t)1U);
+    printf("completed_epochs %zu\n", snapshot.prediction.completed_epochs);
+    if (snapshot.prediction.format_version == 2U) {
+        printf("selected_epoch %zu\n", snapshot.prediction.selected_epoch);
+        printf("target_epochs %zu\n", snapshot.prediction.target_epochs);
+        printf("completion %s\n",
+               snapshot.prediction.completion_reason ==
+                       NEURAL_COMPLETION_EARLY_STOPPING
+                   ? "early_stopping" : "target");
+    }
+    printf("dataset %s\n", dataset_name);
+    printf("samples %zu\n", snapshot.dataset.sample_count);
+    printf("inputs %zu\n", snapshot.dataset.input_count);
+    printf("outputs %zu\n", snapshot.dataset.output_count);
+    printf("loss %.*g\n", DBL_DECIMAL_DIG, evaluation.loss);
+    printf("classification %s\n",
+           evaluation.is_classification ? "yes" : "no");
+    if (evaluation.is_classification) {
+        printf("correct %zu\n", evaluation.correct_count);
+        printf("accuracy %.*g\n", DBL_DECIMAL_DIG, evaluation.accuracy);
+        printf("classes %zu\n", evaluation.class_count);
+        for (class_index = 0U;
+             class_index < evaluation.class_count;
+             class_index++) {
+            size_t predicted_class;
+
+            printf("confusion %zu", class_index);
+            for (predicted_class = 0U;
+                 predicted_class < evaluation.class_count;
+                 predicted_class++) {
+                printf(" %zu",
+                       evaluation.confusion[
+                           class_index * evaluation.class_count +
+                           predicted_class]);
+            }
+            putchar('\n');
+        }
+        for (class_index = 0U;
+             class_index < evaluation.class_count;
+             class_index++) {
+            printf("class %zu precision %.*g recall %.*g f1 %.*g\n",
+                   class_index,
+                   DBL_DECIMAL_DIG,
+                   evaluation.precision[class_index],
+                   DBL_DECIMAL_DIG,
+                   evaluation.recall[class_index],
+                   DBL_DECIMAL_DIG,
+                   evaluation.f1[class_index]);
+        }
+    }
+    puts("end");
+    (void)worker_count;
+    result = EXIT_OK;
+
+cleanup:
+    neural_evaluation_result_free(&evaluation);
+    free(outputs);
+    neural_evaluation_snapshot_free(&snapshot);
+    return result;
+}
+
+static int inspect_path_exists(const char *path,
+                               int *exists,
+                               NeuralError *error)
+{
+    struct stat status;
+
+    if (lstat(path, &status) == 0) {
+        *exists = 1;
+        return 1;
+    }
+    if (errno == ENOENT) {
+        *exists = 0;
+        return 1;
+    }
+    neural_error_set(error,
+                     "%s: unable to inspect state: %s",
+                     path,
+                     strerror(errno));
+    return 0;
+}
+
+static int print_project_state(const char *directory,
+                               const NeuralProject *project,
+                               const NeuralProjectDigests *digests,
+                               NeuralError *error)
+{
+    NeuralWeightsMetadata weights_metadata;
+    NeuralCheckpointMetadata checkpoint_metadata;
+    NeuralModel *weights_model = NULL;
+    NeuralModel *checkpoint_model = NULL;
+    NeuralModel *best_model = NULL;
+    char *weights_path = NULL;
+    char *checkpoint_path = NULL;
+    int weights_exists = 0;
+    int checkpoint_exists = 0;
+    int success = 0;
+
+    weights_path = neural_path_join(directory,
+                                    NEURAL_DEFAULT_WEIGHTS_FILENAME,
+                                    error);
+    checkpoint_path = neural_path_join(directory,
+                                       NEURAL_DEFAULT_CHECKPOINT_FILENAME,
+                                       error);
+    if (weights_path == NULL || checkpoint_path == NULL ||
+        !inspect_path_exists(weights_path, &weights_exists, error) ||
+        !inspect_path_exists(checkpoint_path, &checkpoint_exists, error)) {
+        goto cleanup;
+    }
+    if (weights_exists &&
+        (!neural_model_create(&project->model,
+                              project->training.seed,
+                              &weights_model,
+                              error) ||
+         !neural_weights_load(weights_path,
+                              weights_model,
+                              digests,
+                              &weights_metadata,
+                              error))) {
+        goto cleanup;
+    }
+    if (checkpoint_exists) {
+        if (!neural_model_create(&project->model,
+                                 project->training.seed,
+                                 &checkpoint_model,
+                                 error)) {
+            goto cleanup;
+        }
+        if (project->training.early_stopping_patience != 0U) {
+            if (!neural_model_create(&project->model,
+                                     project->training.seed,
+                                     &best_model,
+                                     error) ||
+                !neural_early_checkpoint_load(checkpoint_path,
+                                              checkpoint_model,
+                                              best_model,
+                                              digests,
+                                              &checkpoint_metadata,
+                                              error)) {
+                goto cleanup;
+            }
+        } else if (!neural_checkpoint_load(checkpoint_path,
+                                           checkpoint_model,
+                                           digests,
+                                           &checkpoint_metadata,
+                                           error)) {
+            goto cleanup;
+        }
+    }
+    printf("Weights state: %s\n", weights_exists ? "present" : "absent");
+    if (weights_exists) {
+        printf("Weights completed epochs: %zu\n",
+               weights_metadata.completed_epochs);
+        printf("Weights selected epoch: %zu\n",
+               weights_metadata.selected_epoch);
+        printf("Weights target epochs: %zu\n",
+               weights_metadata.target_epochs);
+        printf("Weights completion: %s\n",
+               weights_metadata.completion_reason ==
+                       NEURAL_COMPLETION_EARLY_STOPPING
+                   ? "early_stopping" : "target");
+    }
+    printf("Checkpoint state: %s\n",
+           checkpoint_exists ? "present" : "absent");
+    if (checkpoint_exists) {
+        printf("Checkpoint completed epochs: %zu\n",
+               checkpoint_metadata.completed_epochs);
+        printf("Checkpoint target epochs: %zu\n",
+               checkpoint_metadata.target_epochs);
+        if (checkpoint_metadata.format_version == 2U) {
+            printf("Checkpoint best epoch: %zu\n",
+                   checkpoint_metadata.best_epoch);
+            printf("Checkpoint best validation loss: %.*g\n",
+                   DBL_DECIMAL_DIG,
+                   checkpoint_metadata.best_loss);
+            printf("Checkpoint stale epochs: %zu\n",
+                   checkpoint_metadata.stale_epochs);
+        }
+    }
+    success = 1;
+
+cleanup:
+    free(checkpoint_path);
+    free(weights_path);
+    neural_model_free(checkpoint_model);
+    neural_model_free(best_model);
+    neural_model_free(weights_model);
+    return success;
+}
+
+static int command_inspect(const char *directory, int include_state)
 {
     NeuralProject project;
     NeuralProjectDigests digests;
@@ -679,9 +1225,26 @@ static int command_inspect(const char *directory)
     printf("Seed: %" PRIu64 "\n", project.training.seed);
     printf("Checkpoint interval: %zu\n",
            project.training.checkpoint_interval);
+    printf("Early stopping patience: %zu\n",
+           project.training.early_stopping_patience);
+    printf("Early stopping min delta: %.*g\n",
+           DBL_DECIMAL_DIG,
+           project.training.early_stopping_min_delta);
+    if (project.has_validation) {
+        printf("Validation samples: %zu\n",
+               project.validation.sample_count);
+    }
     printf("Model digest: sha256:%s\n", digests.model);
     printf("Dataset digest: sha256:%s\n", digests.dataset);
     printf("Training digest: sha256:%s\n", digests.training);
+    if (include_state &&
+        !print_project_state(directory, &project, &digests, &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        neural_model_free(runtime_model);
+        neural_project_free(&project);
+        neural_project_lock_release(&project_lock);
+        return EXIT_USAGE;
+    }
     puts("Validation: OK");
 
     neural_model_free(runtime_model);
@@ -777,11 +1340,54 @@ int main(int argc, char **argv)
         neural_options_free(&options);
         return EXIT_USAGE;
     }
+    if (neural_option_is_present(&options, OPTION_REPORT_INTERVAL)) {
+        fprintf(stderr,
+                "%s: --report-interval is valid only with train\n",
+                neural_name());
+        neural_options_free(&options);
+        return EXIT_USAGE;
+    }
+    if (neural_option_is_present(&options, OPTION_HISTORY)) {
+        fprintf(stderr,
+                "%s: --history is valid only with train\n",
+                neural_name());
+        neural_options_free(&options);
+        return EXIT_USAGE;
+    }
+    if (neural_option_is_present(&options, OPTION_STATE) &&
+        strcmp(command, "inspect") != 0) {
+        fprintf(stderr,
+                "%s: --state is valid only with inspect\n",
+                neural_name());
+        neural_options_free(&options);
+        return EXIT_USAGE;
+    }
+    if (strcmp(command, "evaluate") == 0) {
+        int result;
+
+        if (options.positional_count != 2U) {
+            fprintf(stderr,
+                    "%s: evaluate requires one project directory\n",
+                    neural_name());
+            neural_options_free(&options);
+            return EXIT_USAGE;
+        }
+        result = command_evaluate(options.positionals[1], &options);
+        neural_options_free(&options);
+        return result;
+    }
+    if (neural_option_is_present(&options, OPTION_DATASET)) {
+        fprintf(stderr,
+                "%s: --dataset is valid only with evaluate\n",
+                neural_name());
+        neural_options_free(&options);
+        return EXIT_USAGE;
+    }
     if (strcmp(command, "inspect") == 0) {
         int result;
         if (neural_option_is_present(&options, OPTION_THREADS)) {
             fprintf(stderr,
-                    "%s: --threads is valid only with train or predict\n",
+                    "%s: --threads is valid only with train, predict, or evaluate\n",
                     neural_name());
             neural_options_free(&options);
             return EXIT_USAGE;
@@ -793,7 +1399,9 @@ int main(int argc, char **argv)
             neural_options_free(&options);
             return EXIT_USAGE;
         }
-        result = command_inspect(options.positionals[1]);
+        result = command_inspect(
+            options.positionals[1],
+            neural_option_is_present(&options, OPTION_STATE));
         neural_options_free(&options);
         return result;
     }

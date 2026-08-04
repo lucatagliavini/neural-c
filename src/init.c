@@ -84,7 +84,9 @@ static int write_project(FILE *stream, const NeuralTrainingConfig *training)
                    "learning_rate %.*g\n"
                    "seed %" PRIu64 "\n"
                    "loss %s\n"
-                   "checkpoint_interval %zu\n",
+                   "checkpoint_interval %zu\n"
+                   "early_stopping_patience %zu\n"
+                   "early_stopping_min_delta %.*g\n",
                    NEURAL_FORMAT_MAGIC,
                    NEURAL_FORMAT_VERSION,
                    training->epochs,
@@ -92,7 +94,10 @@ static int write_project(FILE *stream, const NeuralTrainingConfig *training)
                    training->learning_rate,
                    training->seed,
                    neural_loss_name(training->loss),
-                   training->checkpoint_interval) >= 0;
+                   training->checkpoint_interval,
+                   training->early_stopping_patience,
+                   DBL_DECIMAL_DIG,
+                   training->early_stopping_min_delta) >= 0;
 }
 
 static int write_dataset(FILE *stream, const NeuralModelSpec *model)

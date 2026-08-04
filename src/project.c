@@ -359,6 +359,18 @@ int neural_training_config_validate(const NeuralTrainingConfig *config,
         neural_error_set(error, "training configuration has an invalid loss");
         return 0;
     }
+    if (!isfinite(config->early_stopping_min_delta) ||
+        config->early_stopping_min_delta < 0.0) {
+        neural_error_set(error,
+                         "early_stopping_min_delta must be finite and non-negative");
+        return 0;
+    }
+    if (config->early_stopping_patience == 0U &&
+        config->early_stopping_min_delta != 0.0) {
+        neural_error_set(error,
+                         "early_stopping_min_delta requires positive patience");
+        return 0;
+    }
     return 1;
 }
 
@@ -672,8 +684,11 @@ int neural_training_config_load(const char *path,
         FIELD_SEED = 4U,
         FIELD_LOSS = 8U,
         FIELD_CHECKPOINT_INTERVAL = 16U,
-        ALL_FIELDS = FIELD_EPOCHS | FIELD_RATE | FIELD_SEED | FIELD_LOSS |
-                     FIELD_CHECKPOINT_INTERVAL
+        FIELD_EARLY_PATIENCE = 32U,
+        FIELD_EARLY_MIN_DELTA = 64U,
+        REQUIRED_FIELDS = FIELD_EPOCHS | FIELD_RATE | FIELD_SEED | FIELD_LOSS |
+                          FIELD_CHECKPOINT_INTERVAL,
+        EARLY_FIELDS = FIELD_EARLY_PATIENCE | FIELD_EARLY_MIN_DELTA
     };
 
     if (path == NULL || config == NULL) {
@@ -773,6 +788,31 @@ int neural_training_config_load(const char *path,
                     line_number);
                 goto cleanup;
             }
+        } else if (strcmp(tokens.items[0], "early_stopping_patience") == 0) {
+            field = FIELD_EARLY_PATIENCE;
+            if (!neural_parse_size(tokens.items[1],
+                                   &config->early_stopping_patience)) {
+                neural_error_set(
+                    error,
+                    "%s:%zu: early_stopping_patience must be non-negative",
+                    path,
+                    line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0],
+                          "early_stopping_min_delta") == 0) {
+            field = FIELD_EARLY_MIN_DELTA;
+            if (!neural_parse_real(tokens.items[1],
+                                   &config->early_stopping_min_delta) ||
+                config->early_stopping_min_delta < 0.0) {
+                neural_error_set(
+                    error,
+                    "%s:%zu: early_stopping_min_delta must be finite and "
+                    "non-negative",
+                    path,
+                    line_number);
+                goto cleanup;
+            }
         } else {
             neural_error_set(error,
                              "%s:%zu: unknown configuration property '%s'",
@@ -793,11 +833,23 @@ int neural_training_config_load(const char *path,
         fields |= field;
     }
 
-    if (fields != ALL_FIELDS) {
+    if ((fields & REQUIRED_FIELDS) != REQUIRED_FIELDS) {
         neural_error_set(error,
                          "%s: required properties are epochs, learning_rate, "
                          "seed, loss, and checkpoint_interval",
                          path);
+        goto cleanup;
+    }
+    if ((fields & EARLY_FIELDS) != 0U &&
+        (fields & EARLY_FIELDS) != EARLY_FIELDS) {
+        neural_error_set(
+            error,
+            "%s: early_stopping_patience and early_stopping_min_delta "
+            "must be specified together",
+            path);
+        goto cleanup;
+    }
+    if (!neural_training_config_validate(config, error)) {
         goto cleanup;
     }
     success = 1;
@@ -1000,7 +1052,9 @@ void neural_project_free(NeuralProject *project)
     if (project != NULL) {
         neural_model_spec_free(&project->model);
         neural_dataset_free(&project->dataset);
+        neural_dataset_free(&project->validation);
         memset(&project->training, 0, sizeof(project->training));
+        project->has_validation = 0;
     }
 }
 
@@ -1011,6 +1065,7 @@ int neural_project_load(const char *directory,
     char *model_path = NULL;
     char *config_path = NULL;
     char *dataset_path = NULL;
+    char *validation_path = NULL;
     size_t output_count;
     int success = 0;
 
@@ -1048,12 +1103,27 @@ int neural_project_load(const char *directory,
                              error)) {
         goto cleanup;
     }
+    if (project->training.early_stopping_patience != 0U) {
+        validation_path = neural_path_join(directory,
+                                           NEURAL_DEFAULT_VALIDATION_FILENAME,
+                                           error);
+        if (validation_path == NULL ||
+            !neural_dataset_load(validation_path,
+                                 project->model.input_count,
+                                 output_count,
+                                 &project->validation,
+                                 error)) {
+            goto cleanup;
+        }
+        project->has_validation = 1;
+    }
     success = 1;
 
 cleanup:
     free(model_path);
     free(config_path);
     free(dataset_path);
+    free(validation_path);
     if (!success) {
         neural_project_free(project);
     }

@@ -132,10 +132,14 @@ static void test_interval_boundaries_and_payload(void)
     NeuralCheckpointMetadata loaded;
     NeuralModel *model = NULL;
     NeuralModel *loaded_model = NULL;
-    NeuralEpochReport report = {1U, 0.25};
+    NeuralEpochReport report = {0};
     volatile sig_atomic_t stop_request = 0;
     NeuralError error;
     int prepared;
+
+    report.completed_epochs = 1U;
+    report.loss = 0.25;
+    report.target_epochs = 5U;
 
     (void)remove(path);
     (void)remove(comparison_path);
@@ -269,9 +273,13 @@ static void test_write_failure_preserves_prior_checkpoint(void)
     NeuralProjectDigests digests;
     NeuralProjectCheckpointObserver observer;
     NeuralModel *model = NULL;
-    NeuralEpochReport report = {2U, 0.25};
+    NeuralEpochReport report = {0};
     NeuralError error;
     int prepared;
+
+    report.completed_epochs = 2U;
+    report.loss = 0.25;
+    report.target_epochs = 4U;
 
     (void)chmod(directory, 0700);
     (void)remove(prior_path);

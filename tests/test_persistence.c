@@ -256,7 +256,7 @@ static void test_weights_round_trip(const NeuralProject *project,
     static const char *const path = "build/tests/persistence-weights.txt";
     static const char *const corrupt_path =
         "build/tests/persistence-weights-corrupt.txt";
-    NeuralWeightsMetadata saved = {10000U, {{0}, {0}, {0}}};
+    NeuralWeightsMetadata saved = {0};
     NeuralWeightsMetadata loaded;
     NeuralModel *source = NULL;
     NeuralModel *destination = NULL;
@@ -265,6 +265,7 @@ static void test_weights_round_trip(const NeuralProject *project,
     NeuralProjectDigests wrong_digests;
     NeuralError error;
 
+    saved.completed_epochs = 10000U;
     saved.digests = *digests;
     (void)remove(path);
     (void)remove(corrupt_path);
@@ -376,7 +377,7 @@ static void test_weights_round_trip(const NeuralProject *project,
     check(copy_replacing_line(path,
                               corrupt_path,
                               "neural-c weights ",
-                              "neural-c weights 2"),
+                              "neural-c weights 3"),
           "unsupported-version fixture must be created");
     check(!neural_weights_load(corrupt_path,
                                unchanged,
@@ -402,18 +403,16 @@ static void test_checkpoint_round_trip(const NeuralProject *project,
     static const char *const path = "build/tests/persistence-checkpoint.txt";
     static const char *const corrupt_path =
         "build/tests/persistence-checkpoint-corrupt.txt";
-    NeuralCheckpointMetadata saved = {
-        3500U,
-        10000U,
-        UINT64_C(123456789),
-        NEURAL_OPTIMIZER_GRADIENT_DESCENT,
-        {{0}, {0}, {0}}
-    };
+    NeuralCheckpointMetadata saved = {0};
     NeuralCheckpointMetadata loaded;
     NeuralModel *source = NULL;
     NeuralModel *destination = NULL;
     NeuralError error;
 
+    saved.completed_epochs = 3500U;
+    saved.target_epochs = 10000U;
+    saved.rng_state = UINT64_C(123456789);
+    saved.optimizer = NEURAL_OPTIMIZER_GRADIENT_DESCENT;
     saved.digests = *digests;
     (void)remove(path);
     (void)remove(corrupt_path);
@@ -471,16 +470,13 @@ static void test_checkpoint_round_trip(const NeuralProject *project,
 static void test_invalid_save(const NeuralProject *project,
                               const NeuralProjectDigests *digests)
 {
-    NeuralCheckpointMetadata invalid = {
-        2U,
-        1U,
-        UINT64_C(0),
-        NEURAL_OPTIMIZER_GRADIENT_DESCENT,
-        {{0}, {0}, {0}}
-    };
+    NeuralCheckpointMetadata invalid = {0};
     NeuralModel *model = NULL;
     NeuralError error;
 
+    invalid.completed_epochs = 2U;
+    invalid.target_epochs = 1U;
+    invalid.optimizer = NEURAL_OPTIMIZER_GRADIENT_DESCENT;
     invalid.digests = *digests;
     check(neural_model_create(&project->model,
                               project->training.seed,

@@ -29,6 +29,8 @@ typedef struct {
     uint64_t seed;
     NeuralLoss loss;
     size_t checkpoint_interval;
+    size_t early_stopping_patience;
+    neural_real early_stopping_min_delta;
 } NeuralTrainingConfig;
 
 typedef struct {
@@ -43,6 +45,8 @@ typedef struct {
     NeuralModelSpec model;
     NeuralTrainingConfig training;
     NeuralDataset dataset;
+    NeuralDataset validation;
+    int has_validation;
 } NeuralProject;
 
 /* Load destinations must not already own data; release successful loads. */

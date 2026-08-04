@@ -27,9 +27,10 @@ boundaries, values, ordering, persistence, or output text.
 Prediction acquires the project's non-blocking shared lock, loads the complete
 project, computes all canonical digests, constructs the runtime model, and
 loads `weights.txt` transactionally. Weights must match model, dataset, and
-training provenance and report at least the configured fresh-training epoch
-count. A missing, malformed, incomplete, or incompatible weights file fails
-before inference.
+training provenance. Version 1 weights must report at least the configured
+fresh-training epoch count; version 2 early-stopping weights instead validate
+their observed, target, selected, and completion relationship. A missing,
+malformed, incomplete, or incompatible weights file fails before inference.
 
 The shared lock is retained until all project and weights data have been copied
 and validated. It is then released before inference. The resulting model is an
@@ -74,3 +75,12 @@ and contiguous. Numeric outputs use `DBL_DECIMAL_DIG` precision and the C
 numeric locale, matching persistence round-trip conventions. `end` terminates
 the document. Operational worker counts are deliberately omitted so output is
 identical across execution configurations.
+
+## Version 2 Early-Stopping Output
+
+When finalized weights use the early-stopping format, prediction emits version
+2 and adds `selected_epoch`, `target_epochs`, and
+`completion target|early_stopping` after `completed_epochs`. Samples are always
+computed from the selected model payload. The separation makes an early stop,
+or a target-reaching run whose best epoch was earlier, explicit without
+changing version 1 output for existing weights.

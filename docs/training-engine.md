@@ -109,6 +109,13 @@ returns status 130 and `SIGTERM` returns status 143. If the emergency save
 fails, training reports the persistence error and returns the ordinary runtime
 failure status instead of claiming a recoverable interruption.
 
+An observer may return the controlled-stop status after accepting a coherent
+epoch. The trainer records that epoch and returns success without executing the
+remaining range. The early-stopping project observer uses this only after
+validation loss and best-state ownership have been updated. It also enriches
+telemetry with current/best validation loss and persists current plus best
+models together whenever a checkpoint is required.
+
 ## Completion
 
 Fresh training runs exactly the configured number of epochs, with one full

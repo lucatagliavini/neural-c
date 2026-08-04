@@ -3,6 +3,8 @@
 #include "train_project.h"
 
 #include <errno.h>
+#include <float.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +12,7 @@
 
 #include "neural/defaults.h"
 #include "neural/digest.h"
+#include "neural/evaluation.h"
 #include "neural/model.h"
 #include "neural/persistence.h"
 #include "neural/project.h"
@@ -17,6 +20,343 @@
 #include "path.h"
 #include "project_checkpoint.h"
 #include "project_lock.h"
+
+typedef struct {
+    NeuralProjectCheckpointObserver *checkpoint;
+    NeuralEpochObserver observer;
+    void *observer_context;
+} NeuralProjectTrainingObserver;
+
+typedef struct {
+    const char *checkpoint_path;
+    NeuralModel *current_model;
+    NeuralModel *best_model;
+    const NeuralDataset *validation;
+    NeuralLoss loss;
+    NeuralWorkspace *workspace;
+    neural_real *predicted;
+    size_t interval;
+    size_t patience;
+    neural_real min_delta;
+    const volatile sig_atomic_t *stop_request;
+    int interrupted_signal;
+    int has_best;
+    NeuralCheckpointMetadata metadata;
+    NeuralEpochObserver observer;
+    void *observer_context;
+} NeuralEarlyStoppingObserver;
+
+static int copy_model_parameters(NeuralModel *destination,
+                                 const NeuralModel *source,
+                                 NeuralError *error)
+{
+    size_t layer_index;
+
+    if (destination == NULL || source == NULL ||
+        neural_model_layer_count(destination) !=
+            neural_model_layer_count(source)) {
+        neural_error_set(error, "model parameter copy is incompatible");
+        return 0;
+    }
+    for (layer_index = 0U;
+         layer_index < neural_model_layer_count(source);
+         layer_index++) {
+        const neural_real *weights;
+        const neural_real *biases;
+        size_t weight_count;
+        size_t bias_count;
+
+        weights = neural_model_layer_weights(source,
+                                             layer_index,
+                                             &weight_count);
+        biases = neural_model_layer_biases(source,
+                                           layer_index,
+                                           &bias_count);
+        if (weights == NULL || biases == NULL ||
+            !neural_model_set_layer_parameters(destination,
+                                               layer_index,
+                                               weights,
+                                               weight_count,
+                                               biases,
+                                               bias_count,
+                                               error)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int observe_early_stopping(const NeuralEpochReport *report,
+                                  void *context,
+                                  NeuralError *error)
+{
+    NeuralEarlyStoppingObserver *observer = context;
+    NeuralEpochReport enriched;
+    neural_real validation_loss;
+    sig_atomic_t stop_signal;
+    int improved;
+    int should_checkpoint;
+
+    if (report == NULL || observer == NULL ||
+        !neural_model_evaluate_dataset_loss(observer->current_model,
+                                            observer->workspace,
+                                            observer->predicted,
+                                            observer->validation,
+                                            observer->loss,
+                                            &validation_loss,
+                                            error)) {
+        return NEURAL_EPOCH_OBSERVER_ERROR;
+    }
+    improved = !observer->has_best ||
+               observer->metadata.best_loss - validation_loss >
+                   observer->min_delta;
+    if (improved) {
+        if (!copy_model_parameters(observer->best_model,
+                                   observer->current_model,
+                                   error)) {
+            return NEURAL_EPOCH_OBSERVER_ERROR;
+        }
+        observer->metadata.best_loss = validation_loss;
+        observer->metadata.best_epoch = report->completed_epochs;
+        observer->metadata.stale_epochs = 0U;
+        observer->has_best = 1;
+    } else {
+        observer->metadata.stale_epochs++;
+    }
+    enriched = *report;
+    enriched.has_validation_loss = 1;
+    enriched.validation_loss = validation_loss;
+    enriched.best_validation_loss = observer->metadata.best_loss;
+    enriched.stopped_early =
+        observer->metadata.stale_epochs >= observer->patience;
+    stop_signal = observer->stop_request == NULL
+                      ? 0
+                      : *observer->stop_request;
+    should_checkpoint = stop_signal != 0 || enriched.stopped_early ||
+        (observer->interval != 0U &&
+         report->completed_epochs % observer->interval == 0U);
+    if (should_checkpoint) {
+        observer->metadata.completed_epochs = report->completed_epochs;
+        observer->metadata.rng_state =
+            neural_model_random_state(observer->current_model);
+        if (!neural_early_checkpoint_save_atomic(
+                observer->checkpoint_path,
+                observer->current_model,
+                observer->best_model,
+                &observer->metadata,
+                error)) {
+            return NEURAL_EPOCH_OBSERVER_ERROR;
+        }
+    }
+    if (observer->observer != NULL &&
+        observer->observer(&enriched,
+                           observer->observer_context,
+                           error) != NEURAL_EPOCH_OBSERVER_CONTINUE) {
+        return NEURAL_EPOCH_OBSERVER_ERROR;
+    }
+    if (stop_signal != 0) {
+        observer->interrupted_signal = (int)stop_signal;
+        neural_error_set(error,
+                         "training interrupted by signal %d after epoch %zu; "
+                         "checkpoint saved",
+                         observer->interrupted_signal,
+                         report->completed_epochs);
+        return NEURAL_EPOCH_OBSERVER_ERROR;
+    }
+    return enriched.stopped_early
+               ? NEURAL_EPOCH_OBSERVER_STOP
+               : NEURAL_EPOCH_OBSERVER_CONTINUE;
+}
+
+static int initialize_early_observer(
+    NeuralEarlyStoppingObserver *observer,
+    const char *checkpoint_path,
+    NeuralModel *current_model,
+    NeuralModel *best_model,
+    const NeuralProject *project,
+    const NeuralProjectDigests *digests,
+    size_t target_epochs,
+    const volatile sig_atomic_t *stop_request,
+    NeuralEpochObserver user_observer,
+    void *user_context,
+    NeuralError *error)
+{
+    size_t output_count;
+
+    memset(observer, 0, sizeof(*observer));
+    observer->checkpoint_path = checkpoint_path;
+    observer->current_model = current_model;
+    observer->best_model = best_model;
+    observer->validation = &project->validation;
+    observer->loss = project->training.loss;
+    observer->interval = project->training.checkpoint_interval;
+    observer->patience = project->training.early_stopping_patience;
+    observer->min_delta = project->training.early_stopping_min_delta;
+    observer->stop_request = stop_request;
+    observer->observer = user_observer;
+    observer->observer_context = user_context;
+    observer->metadata.target_epochs = target_epochs;
+    observer->metadata.optimizer = NEURAL_OPTIMIZER_GRADIENT_DESCENT;
+    observer->metadata.digests = *digests;
+    observer->metadata.format_version = 2U;
+    if (!neural_workspace_create(current_model,
+                                 &observer->workspace,
+                                 error)) {
+        return 0;
+    }
+    output_count = neural_model_output_count(current_model);
+    if (output_count > SIZE_MAX / sizeof(*observer->predicted)) {
+        neural_error_set(error, "validation output dimensions overflow");
+        neural_workspace_free(observer->workspace);
+        observer->workspace = NULL;
+        return 0;
+    }
+    observer->predicted = malloc(output_count * sizeof(*observer->predicted));
+    if (observer->predicted == NULL) {
+        neural_error_set(error, "unable to allocate validation output");
+        neural_workspace_free(observer->workspace);
+        observer->workspace = NULL;
+        return 0;
+    }
+    return 1;
+}
+
+static void free_early_observer(NeuralEarlyStoppingObserver *observer)
+{
+    if (observer != NULL) {
+        free(observer->predicted);
+        neural_workspace_free(observer->workspace);
+        observer->predicted = NULL;
+        observer->workspace = NULL;
+    }
+}
+
+static int train_early_stopping_range(
+    const NeuralProject *project,
+    const NeuralProjectDigests *digests,
+    const NeuralExecutionConfig *execution,
+    NeuralModel *current_model,
+    NeuralModel *best_model,
+    const char *weights_path,
+    const char *checkpoint_path,
+    size_t completed_epochs,
+    size_t target_epochs,
+    size_t baseline_selected_epoch,
+    const NeuralCheckpointMetadata *resumed_state,
+    const volatile sig_atomic_t *stop_request,
+    NeuralEpochObserver user_observer,
+    void *user_context,
+    int *interrupted_signal,
+    NeuralTrainingResult *result,
+    NeuralError *error)
+{
+    NeuralEarlyStoppingObserver observer;
+    NeuralWeightsMetadata weights = {0};
+    NeuralTrainingResult completed = {0U, 0U, 0.0};
+    int initialized = 0;
+    int success = 0;
+
+    if (!initialize_early_observer(&observer,
+                                   checkpoint_path,
+                                   current_model,
+                                   best_model,
+                                   project,
+                                   digests,
+                                   target_epochs,
+                                   stop_request,
+                                   user_observer,
+                                   user_context,
+                                   error)) {
+        goto cleanup;
+    }
+    initialized = 1;
+    if (resumed_state != NULL) {
+        observer.metadata = *resumed_state;
+        observer.has_best = 1;
+    } else if (completed_epochs != 0U) {
+        if (!copy_model_parameters(best_model, current_model, error) ||
+            !neural_model_evaluate_dataset_loss(
+                current_model,
+                observer.workspace,
+                observer.predicted,
+                &project->validation,
+                project->training.loss,
+                &observer.metadata.best_loss,
+                error)) {
+            goto cleanup;
+        }
+        observer.metadata.best_epoch = baseline_selected_epoch;
+        observer.metadata.stale_epochs = 0U;
+        observer.has_best = 1;
+    }
+    if (!neural_model_train_full_batch_range(
+            current_model,
+            &project->dataset,
+            &project->training,
+            execution,
+            completed_epochs,
+            target_epochs,
+            observe_early_stopping,
+            &observer,
+            &completed,
+            error)) {
+        goto cleanup;
+    }
+    if (!observer.has_best) {
+        neural_error_set(error, "early stopping produced no selectable model");
+        goto cleanup;
+    }
+    weights.completed_epochs = completed.completed_epochs;
+    weights.digests = *digests;
+    weights.selected_epoch = observer.metadata.best_epoch;
+    weights.target_epochs = target_epochs;
+    weights.completion_reason = completed.completed_epochs < target_epochs
+                                    ? NEURAL_COMPLETION_EARLY_STOPPING
+                                    : NEURAL_COMPLETION_TARGET;
+    weights.format_version = 2U;
+    if (!copy_model_parameters(current_model, best_model, error) ||
+        !neural_model_evaluate_dataset_loss(current_model,
+                                            observer.workspace,
+                                            observer.predicted,
+                                            &project->dataset,
+                                            project->training.loss,
+                                            &completed.final_loss,
+                                            error) ||
+        !neural_early_weights_save_atomic(weights_path,
+                                          current_model,
+                                          &weights,
+                                          error) ||
+        !neural_atomic_file_remove(checkpoint_path, 1, error)) {
+        goto cleanup;
+    }
+    *result = completed;
+    success = 1;
+
+cleanup:
+    if (interrupted_signal != NULL && initialized) {
+        *interrupted_signal = observer.interrupted_signal;
+    }
+    if (initialized) {
+        free_early_observer(&observer);
+    }
+    return success;
+}
+
+static int observe_project_training(const NeuralEpochReport *report,
+                                    void *context,
+                                    NeuralError *error)
+{
+    NeuralProjectTrainingObserver *observer = context;
+
+    if (observer == NULL || observer->checkpoint == NULL ||
+        !neural_project_checkpoint_observe(report,
+                                           observer->checkpoint,
+                                           error)) {
+        return 0;
+    }
+    return observer->observer == NULL ||
+           observer->observer(report, observer->observer_context, error);
+}
 
 static int persistence_path_is_absent(const char *path, NeuralError *error)
 {
@@ -103,15 +443,21 @@ int neural_project_train_fresh_controlled(
     const char *directory,
     const NeuralExecutionConfig *execution,
     const volatile sig_atomic_t *stop_request,
+    NeuralEpochObserver observer,
+    void *observer_context,
     int *interrupted_signal,
     NeuralTrainingResult *result,
     NeuralError *error)
 {
     NeuralProject project;
     NeuralModel *model = NULL;
+    NeuralModel *best_model = NULL;
     NeuralProjectDigests digests;
     NeuralWeightsMetadata metadata;
     NeuralProjectCheckpointObserver checkpoint_observer = {0};
+    NeuralProjectTrainingObserver training_observer = {
+        &checkpoint_observer, observer, observer_context
+    };
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
     NeuralTrainingResult completed = {0U, 0U, 0.0};
     char *weights_path = NULL;
@@ -150,8 +496,38 @@ int neural_project_train_fresh_controlled(
         !neural_model_create(&project.model,
                              project.training.seed,
                              &model,
-                             error) ||
-        !neural_project_checkpoint_observer_initialize(
+                             error)) {
+        goto cleanup;
+    }
+    if (project.training.early_stopping_patience != 0U) {
+        if (!neural_model_create(&project.model,
+                                 project.training.seed,
+                                 &best_model,
+                                 error) ||
+            !train_early_stopping_range(&project,
+                                        &digests,
+                                        execution,
+                                        model,
+                                        best_model,
+                                        weights_path,
+                                        checkpoint_path,
+                                        0U,
+                                        project.training.epochs,
+                                        0U,
+                                        NULL,
+                                        stop_request,
+                                        observer,
+                                        observer_context,
+                                        interrupted_signal,
+                                        &completed,
+                                        error)) {
+            goto cleanup;
+        }
+        *result = completed;
+        success = 1;
+        goto cleanup;
+    }
+    if (!neural_project_checkpoint_observer_initialize(
             &checkpoint_observer,
             checkpoint_path,
             model,
@@ -167,8 +543,8 @@ int neural_project_train_fresh_controlled(
                                        &project.dataset,
                                        &project.training,
                                        execution,
-                                       neural_project_checkpoint_observe,
-                                       &checkpoint_observer,
+                                       observe_project_training,
+                                       &training_observer,
                                        &completed,
                                        error)) {
         goto cleanup;
@@ -189,10 +565,11 @@ int neural_project_train_fresh_controlled(
     success = 1;
 
 cleanup:
-    if (interrupted_signal != NULL) {
+    if (interrupted_signal != NULL && *interrupted_signal == 0) {
         *interrupted_signal = checkpoint_observer.interrupted_signal;
     }
     neural_project_lock_release(&project_lock);
+    neural_model_free(best_model);
     neural_model_free(model);
     if (project_loaded) {
         neural_project_free(&project);
@@ -211,6 +588,8 @@ int neural_project_train_fresh(const char *directory,
                                                  execution,
                                                  NULL,
                                                  NULL,
+                                                 NULL,
+                                                 NULL,
                                                  result,
                                                  error);
 }
@@ -219,6 +598,8 @@ int neural_project_train_resume_controlled(
     const char *directory,
     const NeuralExecutionConfig *execution,
     const volatile sig_atomic_t *stop_request,
+    NeuralEpochObserver observer,
+    void *observer_context,
     int *interrupted_signal,
     NeuralTrainingResult *result,
     NeuralError *error)
@@ -229,9 +610,13 @@ int neural_project_train_resume_controlled(
     NeuralWeightsMetadata weights_metadata;
     NeuralWeightsMetadata final_metadata;
     NeuralProjectCheckpointObserver checkpoint_observer = {0};
+    NeuralProjectTrainingObserver training_observer = {
+        &checkpoint_observer, observer, observer_context
+    };
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
     NeuralTrainingResult completed = {0U, 0U, 0.0};
     NeuralModel *checkpoint_model = NULL;
+    NeuralModel *best_model = NULL;
     NeuralModel *weights_model = NULL;
     char *weights_path = NULL;
     char *checkpoint_path = NULL;
@@ -282,12 +667,27 @@ int neural_project_train_resume_controlled(
         !neural_model_create(&project.model,
                              project.training.seed,
                              &checkpoint_model,
-                             error) ||
-        !neural_checkpoint_load(checkpoint_path,
-                                checkpoint_model,
-                                &digests,
-                                &checkpoint_metadata,
-                                error)) {
+                             error)) {
+        goto cleanup;
+    }
+    if (project.training.early_stopping_patience != 0U) {
+        if (!neural_model_create(&project.model,
+                                 project.training.seed,
+                                 &best_model,
+                                 error) ||
+            !neural_early_checkpoint_load(checkpoint_path,
+                                          checkpoint_model,
+                                          best_model,
+                                          &digests,
+                                          &checkpoint_metadata,
+                                          error)) {
+            goto cleanup;
+        }
+    } else if (!neural_checkpoint_load(checkpoint_path,
+                                       checkpoint_model,
+                                       &digests,
+                                       &checkpoint_metadata,
+                                       error)) {
         goto cleanup;
     }
     if (!weights_exists &&
@@ -296,6 +696,50 @@ int neural_project_train_resume_controlled(
                          "checkpoint target %zu does not match configured epochs %zu",
                          checkpoint_metadata.target_epochs,
                          project.training.epochs);
+        goto cleanup;
+    }
+    if (project.training.early_stopping_patience != 0U) {
+        if (weights_exists) {
+            if (!neural_model_create(&project.model,
+                                     project.training.seed,
+                                     &weights_model,
+                                     error) ||
+                !neural_weights_load(weights_path,
+                                     weights_model,
+                                     &digests,
+                                     &weights_metadata,
+                                     error) ||
+                weights_metadata.completed_epochs >
+                    checkpoint_metadata.completed_epochs) {
+                if (error != NULL && error->message[0] == '\0') {
+                    neural_error_set(error,
+                                     "checkpoint precedes finalized baseline");
+                }
+                goto cleanup;
+            }
+        }
+        if (!train_early_stopping_range(
+                &project,
+                &digests,
+                execution,
+                checkpoint_model,
+                best_model,
+                weights_path,
+                checkpoint_path,
+                checkpoint_metadata.completed_epochs,
+                checkpoint_metadata.target_epochs,
+                checkpoint_metadata.best_epoch,
+                &checkpoint_metadata,
+                stop_request,
+                observer,
+                observer_context,
+                interrupted_signal,
+                &completed,
+                error)) {
+            goto cleanup;
+        }
+        *result = completed;
+        success = 1;
         goto cleanup;
     }
     if (weights_exists) {
@@ -393,8 +837,8 @@ int neural_project_train_resume_controlled(
             execution,
             checkpoint_metadata.completed_epochs,
             checkpoint_metadata.target_epochs,
-            neural_project_checkpoint_observe,
-            &checkpoint_observer,
+            observe_project_training,
+            &training_observer,
             &completed,
             error) ||
         (!weights_exists &&
@@ -414,10 +858,11 @@ int neural_project_train_resume_controlled(
     success = 1;
 
 cleanup:
-    if (interrupted_signal != NULL) {
+    if (interrupted_signal != NULL && *interrupted_signal == 0) {
         *interrupted_signal = checkpoint_observer.interrupted_signal;
     }
     neural_project_lock_release(&project_lock);
+    neural_model_free(best_model);
     neural_model_free(weights_model);
     neural_model_free(checkpoint_model);
     if (project_loaded) {
@@ -437,6 +882,8 @@ int neural_project_train_resume(const char *directory,
                                                   execution,
                                                   NULL,
                                                   NULL,
+                                                  NULL,
+                                                  NULL,
                                                   result,
                                                   error);
 }
@@ -446,6 +893,8 @@ int neural_project_train_additional_controlled(
     const NeuralExecutionConfig *execution,
     size_t additional_epochs,
     const volatile sig_atomic_t *stop_request,
+    NeuralEpochObserver observer,
+    void *observer_context,
     int *interrupted_signal,
     NeuralTrainingResult *result,
     NeuralError *error)
@@ -455,9 +904,13 @@ int neural_project_train_additional_controlled(
     NeuralWeightsMetadata weights_metadata;
     NeuralWeightsMetadata final_metadata;
     NeuralProjectCheckpointObserver checkpoint_observer = {0};
+    NeuralProjectTrainingObserver training_observer = {
+        &checkpoint_observer, observer, observer_context
+    };
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
     NeuralTrainingResult completed = {0U, 0U, 0.0};
     NeuralModel *model = NULL;
+    NeuralModel *best_model = NULL;
     char *weights_path = NULL;
     char *checkpoint_path = NULL;
     size_t target_epochs;
@@ -521,7 +974,8 @@ int neural_project_train_additional_controlled(
                              error)) {
         goto cleanup;
     }
-    if (weights_metadata.completed_epochs < project.training.epochs) {
+    if (weights_metadata.completed_epochs < project.training.epochs &&
+        weights_metadata.format_version != 2U) {
         neural_error_set(error,
                          "final weights epochs %zu precede configured epochs %zu",
                          weights_metadata.completed_epochs,
@@ -534,6 +988,35 @@ int neural_project_train_additional_controlled(
         goto cleanup;
     }
     target_epochs = weights_metadata.completed_epochs + additional_epochs;
+    if (project.training.early_stopping_patience != 0U) {
+        if (!neural_model_create(&project.model,
+                                 project.training.seed,
+                                 &best_model,
+                                 error) ||
+            !train_early_stopping_range(
+                &project,
+                &digests,
+                execution,
+                model,
+                best_model,
+                weights_path,
+                checkpoint_path,
+                weights_metadata.completed_epochs,
+                target_epochs,
+                weights_metadata.selected_epoch,
+                NULL,
+                stop_request,
+                observer,
+                observer_context,
+                interrupted_signal,
+                &completed,
+                error)) {
+            goto cleanup;
+        }
+        *result = completed;
+        success = 1;
+        goto cleanup;
+    }
     if (!neural_project_checkpoint_observer_initialize(
             &checkpoint_observer,
             checkpoint_path,
@@ -553,8 +1036,8 @@ int neural_project_train_additional_controlled(
             execution,
             weights_metadata.completed_epochs,
             target_epochs,
-            neural_project_checkpoint_observe,
-            &checkpoint_observer,
+            observe_project_training,
+            &training_observer,
             &completed,
             error)) {
         goto cleanup;
@@ -572,10 +1055,11 @@ int neural_project_train_additional_controlled(
     success = 1;
 
 cleanup:
-    if (interrupted_signal != NULL) {
+    if (interrupted_signal != NULL && *interrupted_signal == 0) {
         *interrupted_signal = checkpoint_observer.interrupted_signal;
     }
     neural_project_lock_release(&project_lock);
+    neural_model_free(best_model);
     neural_model_free(model);
     if (project_loaded) {
         neural_project_free(&project);
@@ -594,6 +1078,8 @@ int neural_project_train_additional(const char *directory,
     return neural_project_train_additional_controlled(directory,
                                                       execution,
                                                       additional_epochs,
+                                                      NULL,
+                                                      NULL,
                                                       NULL,
                                                       NULL,
                                                       result,

@@ -23,7 +23,16 @@ typedef struct {
 typedef struct {
     size_t completed_epochs;
     neural_real loss;
+    size_t target_epochs;
+    int has_validation_loss;
+    neural_real validation_loss;
+    neural_real best_validation_loss;
+    int stopped_early;
 } NeuralEpochReport;
+
+#define NEURAL_EPOCH_OBSERVER_ERROR 0
+#define NEURAL_EPOCH_OBSERVER_CONTINUE 1
+#define NEURAL_EPOCH_OBSERVER_STOP 2
 
 typedef int (*NeuralEpochObserver)(const NeuralEpochReport *report,
                                    void *context,

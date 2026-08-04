@@ -6,6 +6,7 @@ executable=${1:?usage: test_cli.sh <neural-c-executable>}
 project_dir="build/tests/cli-init-project"
 training_dir="build/tests/cli-training-project"
 interrupt_dir="build/tests/cli-interrupt-project"
+early_dir="build/tests/cli-early-project"
 
 cleanup() {
     rm -f -- \
@@ -20,9 +21,14 @@ cleanup() {
         "$training_dir/model.txt" \
         "$training_dir/project.conf" \
         "$training_dir/train.txt" \
+        "$training_dir/validation.txt" \
+        "$training_dir/test.txt" \
+        "$training_dir/history.txt" \
         "$training_dir/weights.txt" \
         "$training_dir/weights.before" \
         "$training_dir/checkpoint.txt" \
+        "$training_dir/stdout.txt" \
+        "$training_dir/stderr.txt" \
         "$training_dir/.neural-c.lock"
     rmdir -- "$training_dir" 2>/dev/null || true
     rm -f -- \
@@ -36,6 +42,16 @@ cleanup() {
         "$interrupt_dir/stdout.txt" \
         "$interrupt_dir/stderr.txt"
     rmdir -- "$interrupt_dir" 2>/dev/null || true
+    rm -f -- \
+        "$early_dir/model.txt" \
+        "$early_dir/project.conf" \
+        "$early_dir/train.txt" \
+        "$early_dir/validation.txt" \
+        "$early_dir/test.txt" \
+        "$early_dir/weights.txt" \
+        "$early_dir/checkpoint.txt" \
+        "$early_dir/.neural-c.lock"
+    rmdir -- "$early_dir" 2>/dev/null || true
 }
 trap cleanup EXIT
 cleanup
@@ -147,6 +163,16 @@ set -e
 grep -q 'thread count must be a positive integer' <<<"$invalid_threads_output"
 
 set +e
+invalid_report_output=$(
+    "$executable" train "$project_dir" --report-interval nope 2>&1
+)
+invalid_report_status=$?
+set -e
+[[ $invalid_report_status -eq 2 ]]
+grep -q 'report-interval must be a non-negative integer' \
+    <<<"$invalid_report_output"
+
+set +e
 predict_threads_output=$(
     "$executable" predict "$project_dir" 0 --threads 2 2>&1
 )
@@ -178,6 +204,55 @@ set -e
 [[ $busy_training_status -eq 1 ]]
 grep -q 'project is busy' <<<"$busy_training_output"
 [[ ! -e "$training_dir/weights.txt" ]]
+
+"$executable" init "$early_dir" \
+    --inputs 2 \
+    --layer 2:sigmoid \
+    --layer 1:sigmoid \
+    --epochs 100 \
+    --learning-rate 0.5 \
+    --seed 42 \
+    --checkpoint-interval 0 \
+    --early-stopping-patience 3 \
+    --early-stopping-min-delta 100
+cp projects/xor/train.txt "$early_dir/train.txt"
+cp projects/xor/train.txt "$early_dir/validation.txt"
+cp projects/xor/train.txt "$early_dir/test.txt"
+early_training_output=$(
+    "$executable" train "$early_dir" --report-interval 2 --threads 2 2>&1
+)
+grep -q '^Training progress: epoch 4/100, loss ' \
+    <<<"$early_training_output"
+grep -q '^Training complete: 4 epochs, loss ' <<<"$early_training_output"
+grep -q '^neural-c weights 2$' "$early_dir/weights.txt"
+grep -q '^completed_epochs 4$' "$early_dir/weights.txt"
+grep -q '^selected_epoch 1$' "$early_dir/weights.txt"
+grep -q '^target_epochs 100$' "$early_dir/weights.txt"
+grep -q '^completion early_stopping$' "$early_dir/weights.txt"
+early_prediction=$(
+    "$executable" predict "$early_dir" 0 1 --threads 2
+)
+grep -q '^neural-c predictions 2$' <<<"$early_prediction"
+grep -q '^completed_epochs 4$' <<<"$early_prediction"
+grep -q '^selected_epoch 1$' <<<"$early_prediction"
+grep -q '^completion early_stopping$' <<<"$early_prediction"
+early_evaluation=$(
+    "$executable" evaluate "$early_dir" --dataset test --threads 2
+)
+grep -q '^neural-c evaluation 2$' <<<"$early_evaluation"
+grep -q '^selected_epoch 1$' <<<"$early_evaluation"
+early_state=$("$executable" inspect "$early_dir" --state)
+grep -q '^Weights completed epochs: 4$' <<<"$early_state"
+grep -q '^Weights selected epoch: 1$' <<<"$early_state"
+grep -q '^Weights completion: early_stopping$' <<<"$early_state"
+early_additional_output=$(
+    "$executable" train "$early_dir" --additional-epochs 10 --threads 2
+)
+grep -q '^Training complete: 7 epochs, loss ' <<<"$early_additional_output"
+grep -q '^completed_epochs 7$' "$early_dir/weights.txt"
+grep -q '^selected_epoch 1$' "$early_dir/weights.txt"
+grep -q '^target_epochs 14$' "$early_dir/weights.txt"
+grep -q '^completion early_stopping$' "$early_dir/weights.txt"
 
 set +e
 busy_additional_output=$(
@@ -288,12 +363,65 @@ grep -q '^completed_epochs 30000$' "$interrupt_dir/weights.txt"
 flock -u "$training_lock_fd"
 exec {training_lock_fd}>&-
 
-training_output=$("$executable" train "$training_dir" --threads 4)
+"$executable" train "$training_dir" --threads 4 --report-interval 2500 \
+    --history \
+    >"$training_dir/stdout.txt" 2>"$training_dir/stderr.txt"
+training_output=$(<"$training_dir/stdout.txt")
 grep -q '^Training complete: 10000 epochs, loss ' <<<"$training_output"
 grep -q ', workers 4$' <<<"$training_output"
+[[ $(grep -c '^Training progress: epoch ' "$training_dir/stderr.txt") -eq 4 ]]
+grep -q '^Training progress: epoch 2500/10000, loss .*best .*improvement n/a, relative n/a$' \
+    "$training_dir/stderr.txt"
+grep -q '^Training progress: epoch 10000/10000, loss .*improvement .*relative ' \
+    "$training_dir/stderr.txt"
 grep -q '^neural-c weights 1$' "$training_dir/weights.txt"
 grep -q '^completed_epochs 10000$' "$training_dir/weights.txt"
 [[ ! -e "$training_dir/checkpoint.txt" ]]
+grep -q '^neural-c history 1$' "$training_dir/history.txt"
+[[ $(grep -c '^epoch ' "$training_dir/history.txt") -eq 4 ]]
+grep -q '^epoch 10000 target 10000 loss .* best ' \
+    "$training_dir/history.txt"
+
+state_output=$("$executable" inspect "$training_dir" --state)
+grep -q '^Weights state: present$' <<<"$state_output"
+grep -q '^Weights completed epochs: 10000$' <<<"$state_output"
+grep -q '^Checkpoint state: absent$' <<<"$state_output"
+
+cp "$training_dir/train.txt" "$training_dir/validation.txt"
+cp "$training_dir/train.txt" "$training_dir/test.txt"
+evaluation_parallel=$(
+    "$executable" evaluate "$training_dir" --dataset test --threads 4
+)
+evaluation_sequential=$(
+    "$executable" evaluate "$training_dir" --dataset test --threads 1
+)
+[[ "$evaluation_parallel" == "$evaluation_sequential" ]]
+grep -q '^neural-c evaluation 1$' <<<"$evaluation_parallel"
+grep -q '^completed_epochs 10000$' <<<"$evaluation_parallel"
+grep -q '^dataset test$' <<<"$evaluation_parallel"
+grep -q '^samples 4$' <<<"$evaluation_parallel"
+grep -q '^classification yes$' <<<"$evaluation_parallel"
+grep -q '^correct 4$' <<<"$evaluation_parallel"
+grep -q '^accuracy 1$' <<<"$evaluation_parallel"
+grep -q '^confusion 0 2 0$' <<<"$evaluation_parallel"
+grep -q '^confusion 1 0 2$' <<<"$evaluation_parallel"
+grep -q '^class 0 precision 1 recall 1 f1 1$' <<<"$evaluation_parallel"
+grep -q '^class 1 precision 1 recall 1 f1 1$' <<<"$evaluation_parallel"
+grep -q '^end$' <<<"$evaluation_parallel"
+evaluation_validation=$(
+    "$executable" evaluate "$training_dir" --dataset validation --threads 2
+)
+grep -q '^dataset validation$' <<<"$evaluation_validation"
+
+set +e
+invalid_dataset_output=$(
+    "$executable" evaluate "$training_dir" --dataset unknown 2>&1
+)
+invalid_dataset_status=$?
+set -e
+[[ $invalid_dataset_status -eq 2 ]]
+grep -q 'dataset must be train, validation, or test' \
+    <<<"$invalid_dataset_output"
 
 additional_training_output=$(
     "$executable" train "$training_dir" --additional-epochs 2 --threads 2

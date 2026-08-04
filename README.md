@@ -21,6 +21,8 @@ Backpropagation, batch semantics, and the persistent worker pool are defined in
 [`docs/training-engine.md`](docs/training-engine.md).
 Prediction snapshots and versioned output are defined in
 [`docs/prediction.md`](docs/prediction.md).
+Native and emulated architecture qualification is defined in
+[`docs/runtime-validation.md`](docs/runtime-validation.md).
 
 ## Project format
 
@@ -54,8 +56,19 @@ make build-native
 make build-ppc64le
 make test
 make test-thread-sanitize
+make test-ppc64le
+make test-ppc64le-cli
+make test-cross-runtime
+make check-cross-runtime
 make verify-binaries
 ```
+
+On an x86-64 host with `qemu-user`, the ppc64le cross-toolchain, and its
+sysroot installed, `make check-cross-runtime` cross-builds the complete C test
+suite, executes it under `qemu-ppc64le`, runs the full CLI integration suite,
+and verifies bidirectional weights and checkpoint exchange with native
+x86-64. See [`docs/runtime-validation.md`](docs/runtime-validation.md) for the
+qualification contract and the boundary between emulated and native coverage.
 
 ## Create a project
 
@@ -117,6 +130,19 @@ respectively, and the run can continue with `--resume`.
 Versioned parsers, exact `double` round trips, SHA-256 compatibility checks,
 and atomic replacement are already implemented for both persistence files.
 
+Enable deterministic progress and optional diagnostic history independently of
+checkpoint frequency:
+
+```sh
+./neural-c.sh train projects/example --report-interval 100 --history
+```
+
+Early stopping is configured at initialization with
+`--early-stopping-patience N --early-stopping-min-delta X` and requires a
+compatible `validation.txt`. Its resumable checkpoint atomically retains both
+the current and selected-best model; final weights always contain the selected
+model.
+
 `train` and `predict` accept execution-only `-j N` or `--threads N`. The value
 defaults to 1 and is intentionally excluded from project files, digests, and
 checkpoints. Training uses a persistent pool with one private worker context
@@ -127,6 +153,8 @@ Run the architecture-appropriate executable through the launcher:
 ```sh
 ./neural-c.sh --version
 ./neural-c.sh inspect projects/xor
+./neural-c.sh inspect projects/xor --state
+./neural-c.sh evaluate projects/xor --dataset test --threads 4
 ```
 
 Predict one or more samples by supplying a flat sequence partitioned by the
@@ -141,6 +169,10 @@ one ordered `sample` line per input. Snapshot loading holds a shared project
 lock through complete provenance validation, then inference runs from immutable
 memory. Consequently, later training cannot change an in-flight prediction and
 the output is identical across worker counts.
+
+Validation/test ownership, metric contracts, reporting, history, and early
+stopping are specified in
+[`docs/observability-evaluation.md`](docs/observability-evaluation.md).
 
 `inspect` loads and validates the complete project and prints its canonical
 model, dataset, and training SHA-256 digests. Fresh training, resume,

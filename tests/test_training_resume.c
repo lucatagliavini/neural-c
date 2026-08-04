@@ -128,6 +128,7 @@ static void cleanup_project(const char *directory)
         "model.txt",
         "project.conf",
         "train.txt",
+        "validation.txt",
         "weights.txt",
         "weights.before",
         "checkpoint.txt",
@@ -144,6 +145,39 @@ static void cleanup_project(const char *directory)
         (void)remove(path);
     }
     (void)rmdir(directory);
+}
+
+static int prepare_early_project(const char *directory)
+{
+    static const char model_text[] =
+        "neural-c model 1\n\ninput 1\ndense 2 sigmoid\ndense 1 sigmoid\n";
+    static const char dataset_text[] =
+        "neural-c dataset 1\n\n0 -> 0\n1 -> 1\n2 -> 1\n3 -> 0\n";
+    static const char config_text[] =
+        "neural-c project 1\n\nepochs 20\nlearning_rate 0.25\n"
+        "seed 42\nloss mse\ncheckpoint_interval 0\n"
+        "early_stopping_patience 3\n"
+        "early_stopping_min_delta 100\n";
+    char path[256];
+
+    cleanup_project(directory);
+    if (mkdir(directory, 0700) != 0) {
+        return 0;
+    }
+    project_path(path, sizeof(path), directory, "model.txt");
+    if (!write_text(path, model_text)) {
+        return 0;
+    }
+    project_path(path, sizeof(path), directory, "project.conf");
+    if (!write_text(path, config_text)) {
+        return 0;
+    }
+    project_path(path, sizeof(path), directory, "train.txt");
+    if (!write_text(path, dataset_text)) {
+        return 0;
+    }
+    project_path(path, sizeof(path), directory, "validation.txt");
+    return write_text(path, dataset_text);
 }
 
 static int prepare_project(const char *directory,
@@ -586,6 +620,8 @@ static void test_additional_interruption_and_resume(void)
                   &execution,
                   2U,
                   &stop_request,
+                  NULL,
+                  NULL,
                   &interrupted_signal,
                   &result,
                   &error) &&
@@ -858,6 +894,79 @@ static void test_target_and_write_failures(void)
     cleanup_project(directory);
 }
 
+static void test_early_stopping_resume_selects_best(void)
+{
+    static const char *const directory = "build/tests/early-resume";
+    NeuralExecutionConfig execution = {2U};
+    volatile sig_atomic_t stop_request = SIGINT;
+    NeuralTrainingResult result;
+    NeuralProject project = {0};
+    NeuralProjectDigests digests;
+    NeuralWeightsMetadata metadata;
+    NeuralModel *model = NULL;
+    NeuralError error;
+    char checkpoint_path[256];
+    char weights_path[256];
+    int interrupted_signal = 0;
+    int prepared = prepare_early_project(directory);
+
+    project_path(checkpoint_path,
+                 sizeof(checkpoint_path),
+                 directory,
+                 "checkpoint.txt");
+    project_path(weights_path, sizeof(weights_path), directory, "weights.txt");
+    check(prepared, "early-stopping resume fixture must be prepared");
+    if (prepared) {
+        check(!neural_project_train_fresh_controlled(directory,
+                                                     &execution,
+                                                     &stop_request,
+                                                     NULL,
+                                                     NULL,
+                                                     &interrupted_signal,
+                                                     &result,
+                                                     &error) &&
+                  interrupted_signal == SIGINT &&
+                  path_exists(checkpoint_path) &&
+                  !path_exists(weights_path),
+              "interrupted early stopping must save a resumable checkpoint");
+        stop_request = 0;
+        interrupted_signal = 0;
+        check(neural_project_train_resume_controlled(directory,
+                                                     &execution,
+                                                     &stop_request,
+                                                     NULL,
+                                                     NULL,
+                                                     &interrupted_signal,
+                                                     &result,
+                                                     &error) &&
+                  result.completed_epochs == 4U &&
+                  path_exists(weights_path) &&
+                  !path_exists(checkpoint_path),
+              "resumed early stopping must stop at the same patience boundary");
+        check(neural_project_load(directory, &project, &error) &&
+                  neural_project_digests_compute(&project, &digests, &error) &&
+                  neural_model_create(&project.model,
+                                      project.training.seed,
+                                      &model,
+                                      &error) &&
+                  neural_weights_load(weights_path,
+                                      model,
+                                      &digests,
+                                      &metadata,
+                                      &error) &&
+                  metadata.format_version == 2U &&
+                  metadata.completed_epochs == 4U &&
+                  metadata.selected_epoch == 1U &&
+                  metadata.target_epochs == 20U &&
+                  metadata.completion_reason ==
+                      NEURAL_COMPLETION_EARLY_STOPPING,
+              "final early-stopping weights must identify the selected epoch");
+    }
+    neural_model_free(model);
+    neural_project_free(&project);
+    cleanup_project(directory);
+}
+
 int main(void)
 {
     test_resume_matches_continuous_training();
@@ -866,6 +975,7 @@ int main(void)
     test_additional_matches_continuous_training();
     test_additional_interruption_and_resume();
     test_additional_state_validation();
+    test_early_stopping_resume_selects_best();
 
     if (failures != 0) {
         fprintf(stderr, "%d training-resume test(s) failed\n", failures);

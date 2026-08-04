@@ -456,7 +456,7 @@ static void test_project_initialization(void)
     NeuralModelSpec replacement_model = {2U, 1U, replacement_layers};
     NeuralModelSpec invalid_model = {0U, 1U, replacement_layers};
     NeuralTrainingConfig training = {
-        500U, 0.125, UINT64_C(7), NEURAL_LOSS_MSE, 50U
+        500U, 0.125, UINT64_C(7), NEURAL_LOSS_MSE, 50U, 0U, 0.0
     };
     NeuralModelSpec loaded_model;
     NeuralTrainingConfig loaded_training;

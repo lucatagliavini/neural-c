@@ -1,5 +1,8 @@
 NATIVE_CC ?= cc
 PPC64LE_CC ?= powerpc64le-linux-gnu-gcc
+PPC64LE_QEMU ?= qemu-ppc64le
+PPC64LE_SYSROOT ?= /usr/powerpc64le-linux-gnu
+PPC64LE_RUNNER ?= $(PPC64LE_QEMU) -L $(PPC64LE_SYSROOT)
 THREAD_FLAGS ?= -pthread
 UNAME_MACHINE := $(shell uname -m)
 UNAME_RELEASE := $(shell uname -r)
@@ -14,7 +17,7 @@ CPPFLAGS += -Iinclude
 CFLAGS += -std=c11 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow $(THREAD_FLAGS)
 LDLIBS += -lm
 
-LIBRARY_SOURCES := src/activation.c src/atomic_file.c src/backprop.c src/batch.c src/cli_options.c src/compensated_sum.c src/dense.c src/digest.c src/error.c src/executor.c src/gradient.c src/gradient_check.c src/init.c src/loss.c src/model.c src/parallel.c src/parse.c src/path.c src/persistence.c src/predict_project.c src/project.c src/project_checkpoint.c src/project_lock.c src/random.c src/sha256.c src/tensor_ops.c src/train_project.c src/training.c src/version.c
+LIBRARY_SOURCES := src/activation.c src/atomic_file.c src/backprop.c src/batch.c src/cli_options.c src/compensated_sum.c src/dense.c src/digest.c src/error.c src/evaluation.c src/executor.c src/gradient.c src/gradient_check.c src/init.c src/loss.c src/model.c src/parallel.c src/parse.c src/path.c src/persistence.c src/predict_project.c src/project.c src/project_checkpoint.c src/project_lock.c src/random.c src/sha256.c src/tensor_ops.c src/train_project.c src/training.c src/version.c
 PROGRAM_SOURCES := src/main.c $(LIBRARY_SOURCES)
 PUBLIC_HEADERS := $(wildcard include/neural/*.h)
 INTERNAL_HEADERS := $(wildcard src/*.h)
@@ -31,8 +34,16 @@ CHECKPOINT_OBSERVER_TEST_SOURCES := tests/test_checkpoint_observer.c $(LIBRARY_S
 PROJECT_LOCK_TEST_SOURCES := tests/test_project_lock.c $(LIBRARY_SOURCES)
 TRAINING_RESUME_TEST_SOURCES := tests/test_training_resume.c $(LIBRARY_SOURCES)
 PREDICTION_TEST_SOURCES := tests/test_prediction.c $(LIBRARY_SOURCES)
+EVALUATION_TEST_SOURCES := tests/test_evaluation.c $(LIBRARY_SOURCES)
+TEST_NAMES := core model persistence math parallel backprop gradient_check batch
+TEST_NAMES += training_engine checkpoint_observer project_lock training_resume
+TEST_NAMES += prediction evaluation
+PPC64LE_TEST_BINARIES := $(addprefix build/ppc64le/tests/test_,$(TEST_NAMES))
 
-.PHONY: all build build-native build-ppc64le test test-defaults test-sanitize test-thread-sanitize check verify-binaries clean
+.PHONY: all build build-native build-ppc64le test test-defaults
+.PHONY: test-sanitize test-thread-sanitize check verify-binaries clean
+.PHONY: test-ppc64le test-ppc64le-cli test-cross-runtime
+.PHONY: check-cross-runtime
 
 all: build-native
 
@@ -102,7 +113,15 @@ build/tests/test_prediction: $(PREDICTION_TEST_SOURCES) $(PUBLIC_HEADERS) $(INTE
 	mkdir -p $(@D)
 	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) $(PREDICTION_TEST_SOURCES) -o $@ $(LDLIBS)
 
-test: build/tests/test_core build/tests/test_model build/tests/test_persistence build/tests/test_math build/tests/test_parallel build/tests/test_backprop build/tests/test_gradient_check build/tests/test_batch build/tests/test_training_engine build/tests/test_checkpoint_observer build/tests/test_project_lock build/tests/test_training_resume build/tests/test_prediction
+build/tests/test_evaluation: $(EVALUATION_TEST_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
+	mkdir -p $(@D)
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) $(EVALUATION_TEST_SOURCES) -o $@ $(LDLIBS)
+
+build/ppc64le/tests/test_%: tests/test_%.c $(LIBRARY_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
+	mkdir -p $(@D)
+	$(PPC64LE_CC) $(CPPFLAGS) $(CFLAGS) $< $(LIBRARY_SOURCES) -o $@ $(LDLIBS)
+
+test: build/tests/test_core build/tests/test_model build/tests/test_persistence build/tests/test_math build/tests/test_parallel build/tests/test_backprop build/tests/test_gradient_check build/tests/test_batch build/tests/test_training_engine build/tests/test_checkpoint_observer build/tests/test_project_lock build/tests/test_training_resume build/tests/test_prediction build/tests/test_evaluation
 	./build/tests/test_core
 	./build/tests/test_model
 	./build/tests/test_persistence
@@ -116,6 +135,30 @@ test: build/tests/test_core build/tests/test_model build/tests/test_persistence 
 	./build/tests/test_project_lock
 	./build/tests/test_training_resume
 	./build/tests/test_prediction
+	./build/tests/test_evaluation
+
+test-ppc64le: $(PPC64LE_TEST_BINARIES)
+	@for test_binary in $(PPC64LE_TEST_BINARIES); do \
+		printf 'Running %s\n' "$$test_binary"; \
+		$(PPC64LE_RUNNER) "$$test_binary" || exit $$?; \
+	done
+
+test-ppc64le-cli: build/ppc64le/neural-c
+	bash -n tests/run_ppc64le.sh
+	bash -n tests/test_cli.sh
+	PPC64LE_QEMU=$(PPC64LE_QEMU) PPC64LE_SYSROOT=$(PPC64LE_SYSROOT) \
+		./tests/test_cli.sh ./tests/run_ppc64le.sh
+
+test-cross-runtime: build-native build-ppc64le
+	bash -n tests/test_cross_runtime.sh
+	PPC64LE_QEMU=$(PPC64LE_QEMU) PPC64LE_SYSROOT=$(PPC64LE_SYSROOT) \
+		./tests/test_cross_runtime.sh \
+		./build/x86_64/neural-c ./build/ppc64le/neural-c
+
+check-cross-runtime: verify-binaries
+	+$(MAKE) test-ppc64le
+	+$(MAKE) test-ppc64le-cli
+	+$(MAKE) test-cross-runtime
 
 test-defaults:
 	mkdir -p build/tests
@@ -187,6 +230,10 @@ test-sanitize:
 		-fsanitize=address,undefined -fno-omit-frame-pointer \
 		$(PREDICTION_TEST_SOURCES) -o build/tests/test_prediction_sanitize $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_prediction_sanitize
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) -O1 -g \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		$(EVALUATION_TEST_SOURCES) -o build/tests/test_evaluation_sanitize $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_evaluation_sanitize
 
 test-thread-sanitize:
 	mkdir -p build/tests

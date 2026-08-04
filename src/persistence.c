@@ -7,6 +7,7 @@
 #include <float.h>
 #include <inttypes.h>
 #include <locale.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,8 +42,10 @@ typedef struct {
     const char *path;
     enum persistence_kind kind;
     const NeuralModel *model;
+    const NeuralModel *best_model;
     const NeuralWeightsMetadata *weights;
     const NeuralCheckpointMetadata *checkpoint;
+    int early_format;
 } PersistenceWriteRequest;
 
 static const char *persistence_kind_name(enum persistence_kind kind)
@@ -198,6 +201,61 @@ static int write_persistence(FILE *stream,
     return write_payload(stream, model);
 }
 
+static int write_early_persistence(FILE *stream,
+                                   const PersistenceWriteRequest *request)
+{
+    const NeuralProjectDigests *digests = request->kind == PERSISTENCE_WEIGHTS
+        ? &request->weights->digests : &request->checkpoint->digests;
+    size_t completed_epochs = request->kind == PERSISTENCE_WEIGHTS
+        ? request->weights->completed_epochs
+        : request->checkpoint->completed_epochs;
+
+    if (fprintf(stream,
+                "%s %s 2\n",
+                NEURAL_FORMAT_MAGIC,
+                persistence_kind_name(request->kind)) < 0 ||
+        !write_digest(stream, "model_digest", digests->model) ||
+        !write_digest(stream, "dataset_digest", digests->dataset) ||
+        !write_digest(stream, "training_digest", digests->training) ||
+        fprintf(stream, "completed_epochs %zu\n", completed_epochs) < 0) {
+        return 0;
+    }
+    if (request->kind == PERSISTENCE_WEIGHTS) {
+        const char *reason = request->weights->completion_reason ==
+                                     NEURAL_COMPLETION_EARLY_STOPPING
+                                 ? "early_stopping" : "target";
+
+        return fprintf(stream,
+                       "selected_epoch %zu\n"
+                       "target_epochs %zu\n"
+                       "completion %s\n",
+                       request->weights->selected_epoch,
+                       request->weights->target_epochs,
+                       reason) >= 0 &&
+               write_payload(stream, request->model);
+    }
+    if (request->best_model == NULL ||
+        fprintf(stream,
+                "target_epochs %zu\n"
+                "optimizer gradient_descent\n"
+                "rng_state %" PRIu64 "\n"
+                "best_epoch %zu\n"
+                "best_loss %.*g\n"
+                "stale_epochs %zu\n"
+                "current_model\n",
+                request->checkpoint->target_epochs,
+                request->checkpoint->rng_state,
+                request->checkpoint->best_epoch,
+                DBL_DECIMAL_DIG,
+                request->checkpoint->best_loss,
+                request->checkpoint->stale_epochs) < 0 ||
+        !write_payload(stream, request->model) ||
+        fputs("best_model\n", stream) == EOF) {
+        return 0;
+    }
+    return write_payload(stream, request->best_model);
+}
+
 static int write_with_c_locale(FILE *stream,
                                void *opaque,
                                NeuralError *error)
@@ -224,11 +282,15 @@ static int write_with_c_locale(FILE *stream,
         freelocale(c_locale);
         return 0;
     }
-    written = write_persistence(stream,
-                                request->kind,
-                                request->model,
-                                request->weights,
-                                request->checkpoint);
+    if (request->early_format) {
+        written = write_early_persistence(stream, request);
+    } else {
+        written = write_persistence(stream,
+                                    request->kind,
+                                    request->model,
+                                    request->weights,
+                                    request->checkpoint);
+    }
     if (uselocale(previous_locale) == (locale_t)0) {
         neural_error_set(error,
                          "%s: unable to restore numeric locale: %s",
@@ -272,8 +334,10 @@ static int save_atomic(const char *path,
     request.path = path;
     request.kind = kind;
     request.model = model;
+    request.best_model = NULL;
     request.weights = weights;
     request.checkpoint = checkpoint;
+    request.early_format = 0;
     return neural_atomic_file_write(path,
                                     write_with_c_locale,
                                     &request,
@@ -448,8 +512,28 @@ static int parse_uint64_line(PersistenceReader *reader,
     return 1;
 }
 
+static int parse_real_line(PersistenceReader *reader,
+                           const char *name,
+                           neural_real *value,
+                           NeuralError *error)
+{
+    if (!require_line(reader, 2U, name, error)) {
+        return 0;
+    }
+    if (!neural_parse_real(reader->tokens[1], value)) {
+        neural_error_set(error,
+                         "%s:%zu: %s must be a finite number",
+                         reader->path,
+                         reader->line_number,
+                         name);
+        return 0;
+    }
+    return 1;
+}
+
 static int parse_header(PersistenceReader *reader,
                         enum persistence_kind kind,
+                        size_t *format_version,
                         NeuralError *error)
 {
     int status = reader_next(reader, error);
@@ -465,7 +549,7 @@ static int parse_header(PersistenceReader *reader,
         strcmp(reader->tokens[0], NEURAL_FORMAT_MAGIC) != 0 ||
         strcmp(reader->tokens[1], persistence_kind_name(kind)) != 0 ||
         !neural_parse_size(reader->tokens[2], &version) ||
-        version != (size_t)NEURAL_FORMAT_VERSION) {
+        (version != (size_t)NEURAL_FORMAT_VERSION && version != 2U)) {
         neural_error_set(error,
                          "%s:%zu: expected '%s %s %d'",
                          reader->path,
@@ -475,6 +559,7 @@ static int parse_header(PersistenceReader *reader,
                          NEURAL_FORMAT_VERSION);
         return 0;
     }
+    *format_version = version;
     return 1;
 }
 
@@ -482,6 +567,7 @@ static int parse_metadata(PersistenceReader *reader,
                           enum persistence_kind kind,
                           NeuralWeightsMetadata *weights,
                           NeuralCheckpointMetadata *checkpoint,
+                          size_t format_version,
                           NeuralError *error)
 {
     NeuralProjectDigests *digests = kind == PERSISTENCE_WEIGHTS
@@ -526,6 +612,56 @@ static int parse_metadata(PersistenceReader *reader,
                                error)) {
             return 0;
         }
+    }
+    if (format_version == 2U && kind == PERSISTENCE_WEIGHTS) {
+        if (!parse_size_line(reader,
+                             "selected_epoch",
+                             &weights->selected_epoch,
+                             error) ||
+            !parse_size_line(reader,
+                             "target_epochs",
+                             &weights->target_epochs,
+                             error) ||
+            !require_line(reader, 2U, "completion", error)) {
+            return 0;
+        }
+        if (strcmp(reader->tokens[1], "target") == 0) {
+            weights->completion_reason = NEURAL_COMPLETION_TARGET;
+        } else if (strcmp(reader->tokens[1], "early_stopping") == 0) {
+            weights->completion_reason = NEURAL_COMPLETION_EARLY_STOPPING;
+        } else {
+            neural_error_set(error,
+                             "%s:%zu: unknown completion reason '%s'",
+                             reader->path,
+                             reader->line_number,
+                             reader->tokens[1]);
+            return 0;
+        }
+        weights->format_version = format_version;
+        if (weights->target_epochs == 0U ||
+            weights->selected_epoch == 0U ||
+            weights->selected_epoch > weights->completed_epochs ||
+            weights->completed_epochs > weights->target_epochs ||
+            (weights->completion_reason != NEURAL_COMPLETION_TARGET &&
+             weights->completion_reason !=
+                 NEURAL_COMPLETION_EARLY_STOPPING) ||
+            (weights->completion_reason == NEURAL_COMPLETION_TARGET &&
+             weights->completed_epochs != weights->target_epochs) ||
+            (weights->completion_reason ==
+                 NEURAL_COMPLETION_EARLY_STOPPING &&
+             weights->completed_epochs >= weights->target_epochs)) {
+            neural_error_set(error,
+                             "%s:%zu: weights epoch boundaries are invalid",
+                             reader->path,
+                             reader->line_number);
+            return 0;
+        }
+    }
+    if (format_version == 1U && kind == PERSISTENCE_WEIGHTS) {
+        weights->selected_epoch = weights->completed_epochs;
+        weights->target_epochs = weights->completed_epochs;
+        weights->completion_reason = NEURAL_COMPLETION_TARGET;
+        weights->format_version = format_version;
     }
     {
         NeuralError metadata_error;
@@ -664,6 +800,7 @@ static int parse_real_values(PersistenceReader *reader,
 static int parse_payload(PersistenceReader *reader,
                          const NeuralModel *model,
                          ParameterStaging *staging,
+                         int require_end_of_file,
                          NeuralError *error)
 {
     size_t layer_index;
@@ -706,7 +843,7 @@ static int parse_payload(PersistenceReader *reader,
     if (!require_line(reader, 1U, "end", error)) {
         return 0;
     }
-    {
+    if (require_end_of_file) {
         int status = reader_next(reader, error);
 
         if (status < 0) {
@@ -761,6 +898,7 @@ static int load_persistence(const char *path,
     NeuralWeightsMetadata loaded_weights = {0};
     NeuralCheckpointMetadata loaded_checkpoint = {0};
     const NeuralProjectDigests *loaded_digests;
+    size_t format_version = 0U;
     int success = 0;
 
     neural_error_clear(error);
@@ -781,11 +919,23 @@ static int load_persistence(const char *path,
         neural_error_set(error, "%s: unable to open file: %s", path, strerror(errno));
         goto cleanup;
     }
-    if (!parse_header(&reader, kind, error) ||
-        !parse_metadata(&reader,
+    if (!parse_header(&reader, kind, &format_version, error)) {
+        goto cleanup;
+    }
+    if (kind == PERSISTENCE_CHECKPOINT && format_version != 1U) {
+        neural_error_set(error,
+                         "%s:%zu: expected '%s checkpoint %d'",
+                         path,
+                         reader.line_number,
+                         NEURAL_FORMAT_MAGIC,
+                         NEURAL_FORMAT_VERSION);
+        goto cleanup;
+    }
+    if (!parse_metadata(&reader,
                         kind,
                         &loaded_weights,
                         &loaded_checkpoint,
+                        format_version,
                         error)) {
         goto cleanup;
     }
@@ -793,7 +943,7 @@ static int load_persistence(const char *path,
                          ? &loaded_weights.digests
                          : &loaded_checkpoint.digests;
     if (!verify_digests(path, loaded_digests, expected_digests, error) ||
-        !parse_payload(&reader, model, &staging, error)) {
+        !parse_payload(&reader, model, &staging, 1, error)) {
         goto cleanup;
     }
     if (fclose(reader.stream) != 0) {
@@ -884,4 +1034,178 @@ int neural_checkpoint_load(const char *path,
                             NULL,
                             metadata,
                             error);
+}
+
+static int save_early_atomic(const char *path,
+                             enum persistence_kind kind,
+                             const NeuralModel *model,
+                             const NeuralModel *best_model,
+                             const NeuralWeightsMetadata *weights,
+                             const NeuralCheckpointMetadata *checkpoint,
+                             NeuralError *error)
+{
+    PersistenceWriteRequest request;
+
+    neural_error_clear(error);
+    if (path == NULL || path[0] == '\0' || model == NULL ||
+        (kind == PERSISTENCE_CHECKPOINT && best_model == NULL)) {
+        neural_error_set(error, "early persistence path and models are required");
+        return 0;
+    }
+    if (!validate_metadata(kind, weights, checkpoint, error)) {
+        return 0;
+    }
+    if (kind == PERSISTENCE_WEIGHTS) {
+        if (weights->format_version != 2U ||
+            weights->target_epochs == 0U ||
+            weights->selected_epoch == 0U ||
+            weights->selected_epoch > weights->completed_epochs ||
+            weights->completed_epochs > weights->target_epochs ||
+            (weights->completion_reason == NEURAL_COMPLETION_TARGET &&
+             weights->completed_epochs != weights->target_epochs) ||
+            (weights->completion_reason ==
+                 NEURAL_COMPLETION_EARLY_STOPPING &&
+             weights->completed_epochs >= weights->target_epochs)) {
+            neural_error_set(error, "early-stopping weights metadata is invalid");
+            return 0;
+        }
+    } else if (checkpoint->format_version != 2U ||
+               checkpoint->best_epoch == 0U ||
+               checkpoint->best_epoch > checkpoint->completed_epochs ||
+               checkpoint->stale_epochs > checkpoint->completed_epochs ||
+               !isfinite(checkpoint->best_loss) ||
+               checkpoint->rng_state != neural_model_random_state(model)) {
+        neural_error_set(error, "early-stopping checkpoint metadata is invalid");
+        return 0;
+    }
+    request.path = path;
+    request.kind = kind;
+    request.model = model;
+    request.best_model = best_model;
+    request.weights = weights;
+    request.checkpoint = checkpoint;
+    request.early_format = 1;
+    return neural_atomic_file_write(path, write_with_c_locale, &request, error);
+}
+
+int neural_early_weights_save_atomic(
+    const char *path,
+    const NeuralModel *selected_model,
+    const NeuralWeightsMetadata *metadata,
+    NeuralError *error)
+{
+    return save_early_atomic(path,
+                             PERSISTENCE_WEIGHTS,
+                             selected_model,
+                             NULL,
+                             metadata,
+                             NULL,
+                             error);
+}
+
+int neural_early_checkpoint_save_atomic(
+    const char *path,
+    const NeuralModel *current_model,
+    const NeuralModel *best_model,
+    const NeuralCheckpointMetadata *metadata,
+    NeuralError *error)
+{
+    return save_early_atomic(path,
+                             PERSISTENCE_CHECKPOINT,
+                             current_model,
+                             best_model,
+                             NULL,
+                             metadata,
+                             error);
+}
+
+int neural_early_checkpoint_load(
+    const char *path,
+    NeuralModel *current_model,
+    NeuralModel *best_model,
+    const NeuralProjectDigests *expected_digests,
+    NeuralCheckpointMetadata *metadata,
+    NeuralError *error)
+{
+    PersistenceReader reader = {0};
+    ParameterStaging current_staging = {0};
+    ParameterStaging best_staging = {0};
+    NeuralWeightsMetadata unused_weights = {0};
+    NeuralCheckpointMetadata loaded = {0};
+    size_t format_version = 0U;
+    int success = 0;
+
+    neural_error_clear(error);
+    if (path == NULL || current_model == NULL || best_model == NULL ||
+        expected_digests == NULL || metadata == NULL ||
+        !validate_digests(expected_digests, error) ||
+        !staging_create(current_model, &current_staging, error) ||
+        !staging_create(best_model, &best_staging, error)) {
+        goto cleanup;
+    }
+    reader.path = path;
+    reader.stream = fopen(path, "r");
+    if (reader.stream == NULL) {
+        neural_error_set(error, "%s: unable to open file: %s", path, strerror(errno));
+        goto cleanup;
+    }
+    if (!parse_header(&reader,
+                      PERSISTENCE_CHECKPOINT,
+                      &format_version,
+                      error) ||
+        format_version != 2U ||
+        !parse_metadata(&reader,
+                        PERSISTENCE_CHECKPOINT,
+                        &unused_weights,
+                        &loaded,
+                        format_version,
+                        error) ||
+        !parse_size_line(&reader, "best_epoch", &loaded.best_epoch, error) ||
+        !parse_real_line(&reader, "best_loss", &loaded.best_loss, error) ||
+        !parse_size_line(&reader, "stale_epochs", &loaded.stale_epochs, error) ||
+        !require_line(&reader, 1U, "current_model", error) ||
+        !verify_digests(path, &loaded.digests, expected_digests, error) ||
+        !parse_payload(&reader,
+                       current_model,
+                       &current_staging,
+                       0,
+                       error) ||
+        !require_line(&reader, 1U, "best_model", error) ||
+        !parse_payload(&reader, best_model, &best_staging, 1, error)) {
+        goto cleanup;
+    }
+    if (fclose(reader.stream) != 0) {
+        reader.stream = NULL;
+        neural_error_set(error,
+                         "%s: unable to close file: %s",
+                         path,
+                         strerror(errno));
+        goto cleanup;
+    }
+    reader.stream = NULL;
+    loaded.format_version = format_version;
+    if (loaded.best_epoch > loaded.completed_epochs ||
+        loaded.stale_epochs > loaded.completed_epochs ||
+        !isfinite(loaded.best_loss) ||
+        !apply_staging(current_model, &current_staging, error) ||
+        !apply_staging(best_model, &best_staging, error) ||
+        !neural_model_set_random_state(current_model,
+                                       loaded.rng_state,
+                                       error)) {
+        if (error != NULL && error->message[0] == '\0') {
+            neural_error_set(error, "%s: invalid early-stopping state", path);
+        }
+        goto cleanup;
+    }
+    *metadata = loaded;
+    success = 1;
+
+cleanup:
+    free(reader.line);
+    if (reader.stream != NULL) {
+        (void)fclose(reader.stream);
+    }
+    staging_free(&best_staging);
+    staging_free(&current_staging);
+    return success;
 }

@@ -4,8 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "neural/loss.h"
-#include "compensated_sum.h"
+#include "neural/evaluation.h"
 
 int neural_training_request_validate(const NeuralTrainingRequest *request,
                                      NeuralError *error)
@@ -46,78 +45,6 @@ const char *neural_training_mode_name(NeuralTrainingMode mode)
         return "additional";
     }
     return "unknown";
-}
-
-static int compensated_add_scalar(neural_real *sum,
-                                  neural_real *compensation,
-                                  neural_real value,
-                                  NeuralError *error)
-{
-    neural_real new_sum;
-    neural_real new_compensation;
-
-    if (sum == NULL || compensation == NULL ||
-        !neural_compensated_add(*sum,
-                                *compensation,
-                                value,
-                                &new_sum,
-                                &new_compensation)) {
-        neural_error_set(error, "loss accumulation requires finite values");
-        return 0;
-    }
-    *sum = new_sum;
-    *compensation = new_compensation;
-    return 1;
-}
-
-static int evaluate_dataset_loss(const NeuralModel *model,
-                                 NeuralWorkspace *workspace,
-                                 neural_real *predicted,
-                                 const NeuralDataset *dataset,
-                                 NeuralLoss loss,
-                                 neural_real *value,
-                                 NeuralError *error)
-{
-    neural_real sum = 0.0;
-    neural_real compensation = 0.0;
-    size_t sample_index;
-
-    for (sample_index = 0U;
-         sample_index < dataset->sample_count;
-         sample_index++) {
-        const neural_real *inputs =
-            dataset->inputs + sample_index * dataset->input_count;
-        const neural_real *expected =
-            dataset->outputs + sample_index * dataset->output_count;
-        neural_real sample_loss;
-
-        if (!neural_model_forward(model,
-                                  workspace,
-                                  inputs,
-                                  dataset->input_count,
-                                  predicted,
-                                  dataset->output_count,
-                                  error) ||
-            !neural_loss_evaluate(loss,
-                                  predicted,
-                                  expected,
-                                  dataset->output_count,
-                                  &sample_loss,
-                                  error) ||
-            !compensated_add_scalar(&sum,
-                                    &compensation,
-                                    sample_loss,
-                                    error)) {
-            return 0;
-        }
-    }
-    *value = (sum + compensation) /
-             (neural_real)dataset->sample_count;
-    if (!isfinite(*value)) {
-        neural_error_set(error, "dataset mean loss is not finite");
-        return 0;
-    }
-    return 1;
 }
 
 int neural_model_train_full_batch_range(
@@ -174,7 +101,7 @@ int neural_model_train_full_batch_range(
     completed.worker_count =
         neural_parallel_executor_worker_count(executor);
     if (completed_epochs == target_epochs) {
-        if (!evaluate_dataset_loss(model,
+        if (!neural_model_evaluate_dataset_loss(model,
                                    evaluation_workspace,
                                    predicted,
                                    dataset,
@@ -190,7 +117,7 @@ int neural_model_train_full_batch_range(
     }
     for (epoch_index = completed_epochs; epoch_index < target_epochs;) {
         const NeuralGradient *gradient;
-        NeuralEpochReport report;
+        NeuralEpochReport report = {0};
 
         if (!neural_parallel_executor_batch_gradient(
                 executor,
@@ -202,7 +129,7 @@ int neural_model_train_full_batch_range(
                                          gradient,
                                          training->learning_rate,
                                          error) ||
-            !evaluate_dataset_loss(model,
+            !neural_model_evaluate_dataset_loss(model,
                                    evaluation_workspace,
                                    predicted,
                                    dataset,
@@ -212,14 +139,24 @@ int neural_model_train_full_batch_range(
             goto cleanup;
         }
         report.completed_epochs = epoch_index + 1U;
-        if (observer != NULL &&
-            !observer(&report, observer_context, error)) {
+        report.target_epochs = target_epochs;
+        if (observer != NULL) {
+            int observer_status = observer(&report, observer_context, error);
+
+            if (observer_status == NEURAL_EPOCH_OBSERVER_STOP) {
+                completed.completed_epochs = report.completed_epochs;
+                completed.final_loss = report.loss;
+                epoch_index = report.completed_epochs;
+                break;
+            }
+            if (observer_status != NEURAL_EPOCH_OBSERVER_CONTINUE) {
             if (error != NULL && error->message[0] == '\0') {
                 neural_error_set(error,
                                  "epoch observer rejected epoch %zu",
                                  report.completed_epochs);
             }
             goto cleanup;
+            }
         }
         completed.completed_epochs = report.completed_epochs;
         completed.final_loss = report.loss;

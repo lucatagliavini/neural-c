@@ -149,7 +149,7 @@ static void test_xor_training_and_determinism(void)
     neural_real outputs[] = {0.0, 1.0, 1.0, 0.0};
     NeuralDataset dataset = {4U, 2U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
-        10000U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 100U
+        10000U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 100U, 0U, 0.0
     };
     NeuralExecutionConfig serial = {1U};
     NeuralExecutionConfig parallel = {4U};
@@ -222,7 +222,7 @@ static void test_observer_failure(void)
     neural_real outputs[] = {0.0};
     NeuralDataset dataset = {1U, 1U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
-        3U, 0.1, UINT64_C(7), NEURAL_LOSS_MSE, 1U
+        3U, 0.1, UINT64_C(7), NEURAL_LOSS_MSE, 1U, 0U, 0.0
     };
     NeuralExecutionConfig execution = {1U};
     NeuralTrainingResult result = {99U, 99U, 99.0};
@@ -265,7 +265,7 @@ static void test_absolute_epoch_ranges(void)
     neural_real outputs[] = {0.0, 1.0, 1.0, 0.0};
     NeuralDataset dataset = {4U, 2U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
-        4U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 2U
+        4U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 2U, 0U, 0.0
     };
     NeuralExecutionConfig serial = {1U};
     NeuralExecutionConfig parallel = {4U};

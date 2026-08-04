@@ -35,7 +35,74 @@ void neural_prediction_snapshot_free(NeuralPredictionSnapshot *snapshot)
         snapshot->input_count = 0U;
         snapshot->output_count = 0U;
         snapshot->completed_epochs = 0U;
+        snapshot->selected_epoch = 0U;
+        snapshot->target_epochs = 0U;
+        snapshot->completion_reason = NEURAL_COMPLETION_TARGET;
+        snapshot->format_version = 0U;
     }
+}
+
+void neural_evaluation_snapshot_free(NeuralEvaluationSnapshot *snapshot)
+{
+    if (snapshot != NULL) {
+        neural_prediction_snapshot_free(&snapshot->prediction);
+        neural_dataset_free(&snapshot->dataset);
+        snapshot->loss = NEURAL_LOSS_MSE;
+        snapshot->output_activation = NEURAL_ACTIVATION_LINEAR;
+    }
+}
+
+static int load_snapshot_from_project(const char *directory,
+                                      const NeuralProject *project,
+                                      NeuralPredictionSnapshot *snapshot,
+                                      NeuralError *error)
+{
+    NeuralPredictionSnapshot loaded =
+        NEURAL_PREDICTION_SNAPSHOT_INITIALIZER;
+    NeuralProjectDigests digests;
+    NeuralWeightsMetadata metadata;
+    char *weights_path = NULL;
+    int success = 0;
+
+    weights_path = neural_path_join(directory,
+                                    NEURAL_DEFAULT_WEIGHTS_FILENAME,
+                                    error);
+    if (weights_path == NULL ||
+        !neural_project_digests_compute(project, &digests, error) ||
+        !neural_model_create(&project->model,
+                             project->training.seed,
+                             &loaded.model,
+                             error) ||
+        !neural_weights_load(weights_path,
+                             loaded.model,
+                             &digests,
+                             &metadata,
+                             error)) {
+        goto cleanup;
+    }
+    if (metadata.completed_epochs < project->training.epochs &&
+        metadata.format_version != 2U) {
+        neural_error_set(error,
+                         "final weights epochs %zu precede configured epochs %zu",
+                         metadata.completed_epochs,
+                         project->training.epochs);
+        goto cleanup;
+    }
+    loaded.input_count = neural_model_input_count(loaded.model);
+    loaded.output_count = neural_model_output_count(loaded.model);
+    loaded.completed_epochs = metadata.completed_epochs;
+    loaded.selected_epoch = metadata.selected_epoch;
+    loaded.target_epochs = metadata.target_epochs;
+    loaded.completion_reason = metadata.completion_reason;
+    loaded.format_version = metadata.format_version;
+    *snapshot = loaded;
+    loaded.model = NULL;
+    success = 1;
+
+cleanup:
+    neural_model_free(loaded.model);
+    free(weights_path);
+    return success;
 }
 
 int neural_project_prediction_load(const char *directory,
@@ -45,10 +112,7 @@ int neural_project_prediction_load(const char *directory,
     NeuralPredictionSnapshot loaded =
         NEURAL_PREDICTION_SNAPSHOT_INITIALIZER;
     NeuralProject project = {0};
-    NeuralProjectDigests digests;
-    NeuralWeightsMetadata metadata;
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
-    char *weights_path = NULL;
     int project_loaded = 0;
     int success = 0;
 
@@ -64,46 +128,78 @@ int neural_project_prediction_load(const char *directory,
                                      error)) {
         goto cleanup;
     }
-    weights_path = neural_path_join(directory,
-                                    NEURAL_DEFAULT_WEIGHTS_FILENAME,
-                                    error);
-    if (weights_path == NULL ||
-        !neural_project_load(directory, &project, error)) {
+    if (!neural_project_load(directory, &project, error)) {
         goto cleanup;
     }
     project_loaded = 1;
-    if (!neural_project_digests_compute(&project, &digests, error) ||
-        !neural_model_create(&project.model,
-                             project.training.seed,
-                             &loaded.model,
-                             error) ||
-        !neural_weights_load(weights_path,
-                             loaded.model,
-                             &digests,
-                             &metadata,
-                             error)) {
-        goto cleanup;
-    }
-    if (metadata.completed_epochs < project.training.epochs) {
-        neural_error_set(error,
-                         "final weights epochs %zu precede configured epochs %zu",
-                         metadata.completed_epochs,
-                         project.training.epochs);
-        goto cleanup;
-    }
-    loaded.input_count = neural_model_input_count(loaded.model);
-    loaded.output_count = neural_model_output_count(loaded.model);
-    loaded.completed_epochs = metadata.completed_epochs;
-    *snapshot = loaded;
-    loaded.model = NULL;
-    success = 1;
+    success = load_snapshot_from_project(directory, &project, snapshot, error);
 
 cleanup:
     neural_model_free(loaded.model);
     if (project_loaded) {
         neural_project_free(&project);
     }
-    free(weights_path);
+    neural_project_lock_release(&project_lock);
+    return success;
+}
+
+int neural_project_evaluation_load(const char *directory,
+                                   const char *dataset_filename,
+                                   NeuralEvaluationSnapshot *snapshot,
+                                   NeuralError *error)
+{
+    NeuralEvaluationSnapshot loaded = NEURAL_EVALUATION_SNAPSHOT_INITIALIZER;
+    NeuralProject project = {0};
+    NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
+    char *dataset_path = NULL;
+    size_t output_count;
+    int project_loaded = 0;
+    int success = 0;
+
+    neural_error_clear(error);
+    if (directory == NULL || directory[0] == '\0' ||
+        dataset_filename == NULL || dataset_filename[0] == '\0' ||
+        snapshot == NULL) {
+        neural_error_set(error, "evaluation project and dataset are required");
+        return 0;
+    }
+    *snapshot = loaded;
+    if (!neural_project_lock_acquire(directory,
+                                     NEURAL_PROJECT_LOCK_SHARED,
+                                     &project_lock,
+                                     error) ||
+        !neural_project_load(directory, &project, error)) {
+        goto cleanup;
+    }
+    project_loaded = 1;
+    dataset_path = neural_path_join(directory, dataset_filename, error);
+    output_count = project.model.layers[project.model.layer_count - 1U]
+                       .neuron_count;
+    if (dataset_path == NULL ||
+        !load_snapshot_from_project(directory,
+                                    &project,
+                                    &loaded.prediction,
+                                    error) ||
+        !neural_dataset_load(dataset_path,
+                             project.model.input_count,
+                             output_count,
+                             &loaded.dataset,
+                             error)) {
+        goto cleanup;
+    }
+    loaded.loss = project.training.loss;
+    loaded.output_activation =
+        project.model.layers[project.model.layer_count - 1U].activation.kind;
+    *snapshot = loaded;
+    loaded = (NeuralEvaluationSnapshot)NEURAL_EVALUATION_SNAPSHOT_INITIALIZER;
+    success = 1;
+
+cleanup:
+    neural_evaluation_snapshot_free(&loaded);
+    if (project_loaded) {
+        neural_project_free(&project);
+    }
+    free(dataset_path);
     neural_project_lock_release(&project_lock);
     return success;
 }

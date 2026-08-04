@@ -9,11 +9,13 @@ library must remain independent of third-party runtime dependencies.
 ## Project Files
 
 A project directory uses the conventional filenames `model.txt`,
-`project.conf`, `train.txt`, `weights.txt`, and `checkpoint.txt`, plus the
+`project.conf`, `train.txt`, optional `validation.txt` and `test.txt`,
+`weights.txt`, and `checkpoint.txt`, plus diagnostic `history.txt` and the
 operational `.neural-c.lock`. Architecture belongs only in `model.txt`;
-training parameters belong only in `project.conf`; samples belong only in
-`train.txt`. Derived values such as output width and layer count must not be
-repeated. Every text format starts with a versioned `neural-c` header and is
+training parameters belong only in `project.conf`; samples belong only in the
+dataset files. Derived values such as output width and layer count must not be
+repeated. Every durable interchange format starts with a versioned `neural-c`
+header and is
 validated completely before execution. Lock ownership and command access modes
 are defined in `project-locking.md`.
 
@@ -25,9 +27,11 @@ emit locale-specific separators.
 Dense layers use the activation grammar documented in `model-runtime.md`.
 Activation parameters belong only in `model.txt` and are covered by model
 digests; weights and checkpoints must not duplicate them.
-The version 1 persistence grammar, digest encoding, and atomic-write contract
+The persistence grammar, digest encoding, and atomic-write contract
 are authoritative in `persistence-format.md`. Prediction snapshot ownership
-and versioned CLI output are authoritative in `prediction.md`.
+and versioned CLI output are authoritative in `prediction.md`; validation,
+evaluation, history, and early stopping are defined in
+`observability-evaluation.md`.
 
 Thread count is execution-only configuration supplied by `--threads`; it must
 not appear in project files, digests, weights, or checkpoints. Parallel code
