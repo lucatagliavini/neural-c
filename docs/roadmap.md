@@ -95,7 +95,7 @@
     categorical cross-entropy, including the fused softmax/cross-entropy path,
     gradient checks, and compatibility validation between targets, outputs,
     activations, and loss.
-  - **9.2:** expose deterministic mini-batch size as training-owned
+  - **9.2 — complete:** expose deterministic mini-batch size as training-owned
     configuration covered by canonical provenance, including incomplete final
     batches and exact continuation semantics.
   - **9.3:** add deterministic per-epoch shuffling with a specified PRNG stream,

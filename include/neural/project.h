@@ -34,6 +34,7 @@ typedef struct {
     size_t checkpoint_interval;
     size_t early_stopping_patience;
     neural_real early_stopping_min_delta;
+    size_t batch_size;
 } NeuralTrainingConfig;
 
 typedef struct {

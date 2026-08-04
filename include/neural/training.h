@@ -48,7 +48,7 @@ int neural_training_request_validate(const NeuralTrainingRequest *request,
                                      NeuralError *error);
 const char *neural_training_mode_name(NeuralTrainingMode mode);
 
-int neural_model_train_full_batch(
+int neural_model_train(
     NeuralModel *model,
     const NeuralDataset *dataset,
     const NeuralTrainingConfig *training,
@@ -58,7 +58,7 @@ int neural_model_train_full_batch(
     NeuralTrainingResult *result,
     NeuralError *error);
 
-int neural_model_train_full_batch_range(
+int neural_model_train_range(
     NeuralModel *model,
     const NeuralDataset *dataset,
     const NeuralTrainingConfig *training,

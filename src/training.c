@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "neural/batch.h"
 #include "neural/evaluation.h"
 
 int neural_training_request_validate(const NeuralTrainingRequest *request,
@@ -47,7 +48,7 @@ const char *neural_training_mode_name(NeuralTrainingMode mode)
     return "unknown";
 }
 
-int neural_model_train_full_batch_range(
+int neural_model_train_range(
     NeuralModel *model,
     const NeuralDataset *dataset,
     const NeuralTrainingConfig *training,
@@ -63,6 +64,7 @@ int neural_model_train_full_batch_range(
     NeuralWorkspace *evaluation_workspace = NULL;
     neural_real *predicted = NULL;
     NeuralTrainingResult completed = {0U, 0U, 0.0};
+    NeuralBatchPlan batch_plan;
     size_t output_count;
     size_t epoch_index;
     int success = 0;
@@ -86,6 +88,16 @@ int neural_model_train_full_batch_range(
                                          &executor,
                                          error) ||
         !neural_workspace_create(model, &evaluation_workspace, error)) {
+        goto cleanup;
+    }
+    if (!neural_batch_plan_create(
+            dataset->sample_count,
+            training->batch_size == 0U ||
+                    training->batch_size > dataset->sample_count
+                ? dataset->sample_count
+                : training->batch_size,
+            &batch_plan,
+            error)) {
         goto cleanup;
     }
     output_count = neural_model_output_count(model);
@@ -116,20 +128,34 @@ int neural_model_train_full_batch_range(
         goto cleanup;
     }
     for (epoch_index = completed_epochs; epoch_index < target_epochs;) {
-        const NeuralGradient *gradient;
         NeuralEpochReport report = {0};
+        size_t batch_index;
 
-        if (!neural_parallel_executor_batch_gradient(
-                executor,
-                0U,
-                dataset->sample_count,
-                &gradient,
-                error) ||
-            !neural_model_apply_gradient(model,
-                                         gradient,
-                                         training->learning_rate,
+        for (batch_index = 0U;
+             batch_index < batch_plan.batch_count;
+             batch_index++) {
+            const NeuralGradient *gradient;
+            size_t sample_begin;
+            size_t sample_end;
+
+            if (!neural_batch_plan_range(&batch_plan,
+                                         batch_index,
+                                         &sample_begin,
+                                         &sample_end,
                                          error) ||
-            !neural_model_evaluate_dataset_loss(model,
+                !neural_parallel_executor_batch_gradient(executor,
+                                                         sample_begin,
+                                                         sample_end,
+                                                         &gradient,
+                                                         error) ||
+                !neural_model_apply_gradient(model,
+                                             gradient,
+                                             training->learning_rate,
+                                             error)) {
+                goto cleanup;
+            }
+        }
+        if (!neural_model_evaluate_dataset_loss(model,
                                    evaluation_workspace,
                                    predicted,
                                    dataset,
@@ -150,12 +176,12 @@ int neural_model_train_full_batch_range(
                 break;
             }
             if (observer_status != NEURAL_EPOCH_OBSERVER_CONTINUE) {
-            if (error != NULL && error->message[0] == '\0') {
-                neural_error_set(error,
-                                 "epoch observer rejected epoch %zu",
-                                 report.completed_epochs);
-            }
-            goto cleanup;
+                if (error != NULL && error->message[0] == '\0') {
+                    neural_error_set(error,
+                                     "epoch observer rejected epoch %zu",
+                                     report.completed_epochs);
+                }
+                goto cleanup;
             }
         }
         completed.completed_epochs = report.completed_epochs;
@@ -172,7 +198,7 @@ cleanup:
     return success;
 }
 
-int neural_model_train_full_batch(
+int neural_model_train(
     NeuralModel *model,
     const NeuralDataset *dataset,
     const NeuralTrainingConfig *training,
@@ -184,7 +210,7 @@ int neural_model_train_full_batch(
 {
     size_t target_epochs = training == NULL ? 0U : training->epochs;
 
-    return neural_model_train_full_batch_range(model,
+    return neural_model_train_range(model,
                                                dataset,
                                                training,
                                                execution,

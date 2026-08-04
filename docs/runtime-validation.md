@@ -106,4 +106,6 @@ diagnosing a failure.
 The matrix also imports, trains, and predicts an independently created
 softmax/categorical-cross-entropy project on both architectures. Its canonical
 training digest is exact and its predictions use the floating-point tolerance
-above.
+above. That fixture uses a training batch size that leaves an incomplete final
+batch, covering deterministic mini-batch execution and persistence provenance
+on both runtimes.

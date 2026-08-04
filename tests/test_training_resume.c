@@ -203,7 +203,8 @@ static int prepare_project(const char *directory,
     (void)snprintf(config_text,
                    sizeof(config_text),
                    "neural-c project 1\n\nepochs %zu\nlearning_rate 0.25\n"
-                   "seed 42\nloss mse\ncheckpoint_interval %zu\n",
+                   "seed 42\nloss mse\ncheckpoint_interval %zu\n"
+                   "batch_size 3\n",
                    epochs,
                    checkpoint_interval);
     return write_text(model_path, model_text) &&
@@ -229,7 +230,7 @@ static int train_state(const char *directory,
                                project->training.seed,
                                model,
                                error) &&
-           neural_model_train_full_batch_range(*model,
+           neural_model_train_range(*model,
                                                &project->dataset,
                                                &project->training,
                                                &execution,
@@ -394,7 +395,7 @@ static void test_resume_matches_continuous_training(void)
                                       &digests,
                                       &weights_metadata,
                                       &error) &&
-                  neural_model_train_full_batch(expected_model,
+                  neural_model_train(expected_model,
                                                 &project.dataset,
                                                 &project.training,
                                                 &parallel,
@@ -554,7 +555,7 @@ static void test_additional_matches_continuous_training(void)
                                       &digests,
                                       &metadata,
                                       &error) &&
-                  neural_model_train_full_batch_range(expected_model,
+                  neural_model_train_range(expected_model,
                                                       &project.dataset,
                                                       &project.training,
                                                       &parallel,

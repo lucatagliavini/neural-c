@@ -19,9 +19,10 @@ coordinator owns the exclusive update boundary between batch calls.
 
 ## Deterministic Tasks and Reduction
 
-The logical task plan contains exactly one task per sample, always in original
-sample order. `thread_count` changes only how many workers execute those tasks;
-it never changes task boundaries. Each completed task leaves its sample
+Each epoch partitions the source-order samples into configured batch ranges,
+and each range contains exactly one logical task per sample. `thread_count`
+changes only how many workers execute those tasks; it never changes batch or
+task boundaries. Each completed task leaves its sample
 gradient in its worker context. After each bounded execution wave, the main
 thread feeds those gradients to `NeuralBatchAccumulator` by increasing global
 sample index, then reuses the worker buffers. Finalization forms the batch mean

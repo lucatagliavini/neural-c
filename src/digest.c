@@ -228,6 +228,10 @@ static void digest_training(const NeuralTrainingConfig *training,
     update_u64(&context, training->seed);
     update_text(&context, neural_loss_name(training->loss));
     update_size(&context, training->checkpoint_interval);
+    if (training->batch_size != 0U) {
+        update_text(&context, "mini_batch");
+        update_size(&context, training->batch_size);
+    }
     if (training->early_stopping_patience != 0U) {
         char validation_digest[NEURAL_SHA256_TEXT_CAPACITY];
 

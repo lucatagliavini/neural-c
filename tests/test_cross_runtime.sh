@@ -333,10 +333,10 @@ compare_prediction_documents \
 printf 'Cross-runtime: comparing independently apportioned splits\n'
 run_native init "$native_split_dir" --inputs 4 --layer 3:softmax \
     --epochs 2 --loss categorical_cross_entropy \
-    --checkpoint-interval 0 >/dev/null
+    --checkpoint-interval 0 --batch-size 5 >/dev/null
 run_ppc64le init "$ppc64le_split_dir" --inputs 4 --layer 3:softmax \
     --epochs 2 --loss categorical_cross_entropy \
-    --checkpoint-interval 0 >/dev/null
+    --checkpoint-interval 0 --batch-size 5 >/dev/null
 run_native import-csv "$native_split_dir" \
     tests/fixtures/iris-small-split.csv \
     --schema tests/fixtures/iris-schema.txt --validation-ratio 0.2 \

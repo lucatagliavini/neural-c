@@ -112,13 +112,18 @@ grep -q 'binary_cross_entropy requires sigmoid output' \
     --epochs 250 \
     --learning-rate 0.25 \
     --seed 7 \
-    --checkpoint-interval 0
+    --checkpoint-interval 0 \
+    --batch-size 3
 
 grep -q '^input 3$' "$project_dir/model.txt"
 grep -q '^dense 4 leaky_relu alpha=0.01$' "$project_dir/model.txt"
 grep -q '^dense 2 sigmoid$' "$project_dir/model.txt"
 grep -q '^epochs 250$' "$project_dir/project.conf"
 grep -q '^checkpoint_interval 0$' "$project_dir/project.conf"
+grep -q '^batch_size 3$' "$project_dir/project.conf"
+printf '0 0 0 -> 0 0\n' >>"$project_dir/train.txt"
+configured_inspect=$("$executable" inspect "$project_dir")
+grep -q '^Batch size: 3$' <<<"$configured_inspect"
 
 if "$executable" init "$project_dir" --inputs 1 --layer 1:sigmoid; then
     echo "init unexpectedly overwrote an existing project" >&2
@@ -131,6 +136,7 @@ grep -q '^dense 1 tanh$' "$project_dir/model.txt"
 grep -q '^epochs 10000$' "$project_dir/project.conf"
 grep -q '^learning_rate 0.5$' "$project_dir/project.conf"
 grep -q '^checkpoint_interval 100$' "$project_dir/project.conf"
+grep -q '^batch_size 0$' "$project_dir/project.conf"
 ! grep -q 'threads' "$project_dir/project.conf"
 
 exec {init_lock_fd}<>"$project_dir/.neural-c.lock"
@@ -148,6 +154,7 @@ flock -u "$init_lock_fd"
 exec {init_lock_fd}>&-
 
 inspect_output=$("$executable" inspect projects/xor)
+grep -q '^Batch size: full dataset$' <<<"$inspect_output"
 grep -Eq '^Model digest: sha256:[0-9a-f]{64}$' <<<"$inspect_output"
 grep -Eq '^Dataset digest: sha256:[0-9a-f]{64}$' <<<"$inspect_output"
 grep -Eq '^Training digest: sha256:[0-9a-f]{64}$' <<<"$inspect_output"

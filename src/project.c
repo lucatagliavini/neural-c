@@ -690,6 +690,7 @@ int neural_training_config_load(const char *path,
         FIELD_CHECKPOINT_INTERVAL = 16U,
         FIELD_EARLY_PATIENCE = 32U,
         FIELD_EARLY_MIN_DELTA = 64U,
+        FIELD_BATCH_SIZE = 128U,
         REQUIRED_FIELDS = FIELD_EPOCHS | FIELD_RATE | FIELD_SEED | FIELD_LOSS |
                           FIELD_CHECKPOINT_INTERVAL,
         EARLY_FIELDS = FIELD_EARLY_PATIENCE | FIELD_EARLY_MIN_DELTA
@@ -812,6 +813,16 @@ int neural_training_config_load(const char *path,
                     error,
                     "%s:%zu: early_stopping_min_delta must be finite and "
                     "non-negative",
+                    path,
+                    line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "batch_size") == 0) {
+            field = FIELD_BATCH_SIZE;
+            if (!neural_parse_size(tokens.items[1], &config->batch_size)) {
+                neural_error_set(
+                    error,
+                    "%s:%zu: batch_size must be a non-negative integer",
                     path,
                     line_number);
                 goto cleanup;

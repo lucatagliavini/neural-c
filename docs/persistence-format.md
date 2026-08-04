@@ -62,7 +62,11 @@ each neuron count, activation name, and activation parameters in enum order.
 The dataset stream contains its dimensions and values in sample/input/output
 order. The training stream contains epochs, learning rate, seed, loss, and
 checkpoint interval. A zero checkpoint interval canonically represents
-disabled periodic saves. When early stopping is enabled, the stream also
+disabled periodic saves. A positive `batch_size` appends the `mini_batch`
+marker and configured value to the training stream before optional
+early-stopping state. Zero or an absent legacy property selects full-batch and
+preserves the historical training digest exactly. When early stopping is
+enabled, the stream also
 contains its patience/minimum delta and the canonical validation digest.
 Disabled early stopping preserves the version 1 training digest exactly.
 When `preprocessing.txt` is present, the dataset digest additionally binds its
@@ -79,6 +83,10 @@ Existing `mse` canonical streams and digests remain byte-for-byte unchanged.
 Binary and categorical cross-entropy use their canonical names in the same
 stream, so persistence produced for one loss cannot be loaded under another.
 Loss/output/target rules are defined in `losses.md`.
+
+Milestone 9.2 does not change weights or checkpoint payload versions. Batch
+boundaries are derived from the digest-bound project configuration, and
+checkpoints remain coherent completed-epoch snapshots.
 
 ## Atomic Replacement
 

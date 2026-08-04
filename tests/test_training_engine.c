@@ -155,7 +155,7 @@ static void test_xor_training_and_determinism(void)
     neural_real outputs[] = {0.0, 1.0, 1.0, 0.0};
     NeuralDataset dataset = {4U, 2U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
-        10000U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 100U, 0U, 0.0
+        10000U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 100U, 0U, 0.0, 0U
     };
     NeuralExecutionConfig serial = {1U};
     NeuralExecutionConfig parallel = {4U};
@@ -178,7 +178,7 @@ static void test_xor_training_and_determinism(void)
                                    &error);
     check(prepared, "XOR training models must be prepared");
     if (prepared) {
-        check(neural_model_train_full_batch(serial_model,
+        check(neural_model_train(serial_model,
                                             &dataset,
                                             &training,
                                             &serial,
@@ -187,7 +187,7 @@ static void test_xor_training_and_determinism(void)
                                             &serial_result,
                                             &error),
               "serial XOR training must complete");
-        check(neural_model_train_full_batch(parallel_model,
+        check(neural_model_train(parallel_model,
                                             &dataset,
                                             &training,
                                             &parallel,
@@ -236,7 +236,7 @@ static void test_binary_cross_entropy_training(void)
     NeuralDataset dataset = {4U, 2U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
         5000U, 0.5, UINT64_C(42),
-        NEURAL_LOSS_BINARY_CROSS_ENTROPY, 0U, 0U, 0.0
+        NEURAL_LOSS_BINARY_CROSS_ENTROPY, 0U, 0U, 0.0, 0U
     };
     NeuralExecutionConfig serial = {1U};
     NeuralExecutionConfig parallel = {4U};
@@ -253,7 +253,7 @@ static void test_binary_cross_entropy_training(void)
                                    &parallel_model, &error);
     check(prepared, "binary cross-entropy training models must be prepared");
     if (prepared) {
-        check(neural_model_train_full_batch(serial_model,
+        check(neural_model_train(serial_model,
                                             &dataset,
                                             &training,
                                             &serial,
@@ -261,7 +261,7 @@ static void test_binary_cross_entropy_training(void)
                                             NULL,
                                             &serial_result,
                                             &error) &&
-                  neural_model_train_full_batch(parallel_model,
+                  neural_model_train(parallel_model,
                                                 &dataset,
                                                 &training,
                                                 &parallel,
@@ -290,7 +290,7 @@ static void test_observer_failure(void)
     neural_real outputs[] = {0.0};
     NeuralDataset dataset = {1U, 1U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
-        3U, 0.1, UINT64_C(7), NEURAL_LOSS_MSE, 1U, 0U, 0.0
+        3U, 0.1, UINT64_C(7), NEURAL_LOSS_MSE, 1U, 0U, 0.0, 0U
     };
     NeuralExecutionConfig execution = {1U};
     NeuralTrainingResult result = {99U, 99U, 99.0};
@@ -301,7 +301,7 @@ static void test_observer_failure(void)
     check(neural_model_create(&spec, training.seed, &model, &error),
           "observer failure model must be prepared");
     if (model != NULL) {
-        check(!neural_model_train_full_batch(model,
+        check(!neural_model_train(model,
                                              &dataset,
                                              &training,
                                              &execution,
@@ -333,7 +333,7 @@ static void test_absolute_epoch_ranges(void)
     neural_real outputs[] = {0.0, 1.0, 1.0, 0.0};
     NeuralDataset dataset = {4U, 2U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
-        4U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 2U, 0U, 0.0
+        4U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 2U, 0U, 0.0, 0U
     };
     NeuralExecutionConfig serial = {1U};
     NeuralExecutionConfig parallel = {4U};
@@ -358,7 +358,7 @@ static void test_absolute_epoch_ranges(void)
                                    &error);
     check(prepared, "epoch-range models must be prepared");
     if (prepared) {
-        check(neural_model_train_full_batch(continuous,
+        check(neural_model_train(continuous,
                                             &dataset,
                                             &training,
                                             &serial,
@@ -367,7 +367,7 @@ static void test_absolute_epoch_ranges(void)
                                             &continuous_result,
                                             &error),
               "continuous epoch-range reference must train");
-        check(neural_model_train_full_batch_range(resumed,
+        check(neural_model_train_range(resumed,
                                                   &dataset,
                                                   &training,
                                                   &serial,
@@ -379,7 +379,7 @@ static void test_absolute_epoch_ranges(void)
                                                   &error) &&
                   partial_result.completed_epochs == 2U,
               "the first absolute epoch range must complete");
-        check(neural_model_train_full_batch_range(resumed,
+        check(neural_model_train_range(resumed,
                                                   &dataset,
                                                   &training,
                                                   &parallel,
@@ -394,7 +394,7 @@ static void test_absolute_epoch_ranges(void)
                   models_equal(continuous, resumed) &&
                   resumed_result.final_loss == continuous_result.final_loss,
               "resumed ranges must match continuous training across workers");
-        check(neural_model_train_full_batch_range(
+        check(neural_model_train_range(
                   resumed,
                   &dataset,
                   &training,
@@ -409,7 +409,7 @@ static void test_absolute_epoch_ranges(void)
                   no_work_result.completed_epochs == 4U &&
                   no_work_result.final_loss == resumed_result.final_loss,
               "an already-complete range must only evaluate final loss");
-        check(!neural_model_train_full_batch_range(resumed,
+        check(!neural_model_train_range(resumed,
                                                    &dataset,
                                                    &training,
                                                    &serial,
@@ -427,12 +427,130 @@ static void test_absolute_epoch_ranges(void)
     neural_model_free(continuous);
 }
 
+static void test_mini_batch_determinism_and_continuation(void)
+{
+    NeuralLayerSpec layers[] = {
+        {3U, {NEURAL_ACTIVATION_TANH, 0U, NULL}},
+        {1U, {NEURAL_ACTIVATION_LINEAR, 0U, NULL}}
+    };
+    NeuralModelSpec spec = {1U, 2U, layers};
+    neural_real inputs[] = {-1.0, -0.5, 0.0, 0.5, 1.0};
+    neural_real outputs[] = {-1.5, -0.5, 0.5, 1.5, 2.5};
+    NeuralDataset dataset = {5U, 1U, 1U, inputs, outputs};
+    NeuralTrainingConfig mini_batch = {
+        5U, 0.05, UINT64_C(91), NEURAL_LOSS_MSE, 0U, 0U, 0.0, 2U
+    };
+    NeuralTrainingConfig full_batch = mini_batch;
+    NeuralTrainingConfig oversized_batch = mini_batch;
+    NeuralExecutionConfig serial = {1U};
+    NeuralExecutionConfig parallel = {4U};
+    NeuralModel *continuous = NULL;
+    NeuralModel *threaded = NULL;
+    NeuralModel *resumed = NULL;
+    NeuralModel *full = NULL;
+    NeuralModel *oversized = NULL;
+    NeuralTrainingResult continuous_result;
+    NeuralTrainingResult threaded_result;
+    NeuralTrainingResult partial_result;
+    NeuralTrainingResult resumed_result;
+    NeuralTrainingResult full_result;
+    NeuralTrainingResult oversized_result;
+    NeuralError error;
+    int prepared;
+
+    full_batch.batch_size = 0U;
+    oversized_batch.batch_size = 99U;
+    prepared = neural_model_create(&spec, mini_batch.seed,
+                                   &continuous, &error) &&
+               neural_model_create(&spec, mini_batch.seed,
+                                   &threaded, &error) &&
+               neural_model_create(&spec, mini_batch.seed,
+                                   &resumed, &error) &&
+               neural_model_create(&spec, mini_batch.seed,
+                                   &full, &error) &&
+               neural_model_create(&spec, mini_batch.seed,
+                                   &oversized, &error);
+    check(prepared, "mini-batch training models must be prepared");
+    if (prepared) {
+        check(neural_model_train(continuous,
+                                 &dataset,
+                                 &mini_batch,
+                                 &serial,
+                                 NULL,
+                                 NULL,
+                                 &continuous_result,
+                                 &error) &&
+                  neural_model_train(threaded,
+                                     &dataset,
+                                     &mini_batch,
+                                     &parallel,
+                                     NULL,
+                                     NULL,
+                                     &threaded_result,
+                                     &error),
+              "incomplete mini-batches must train across worker counts");
+        check(models_equal(continuous, threaded) &&
+                  continuous_result.final_loss == threaded_result.final_loss,
+              "mini-batch training must be bit-identical across workers");
+        check(neural_model_train_range(resumed,
+                                       &dataset,
+                                       &mini_batch,
+                                       &serial,
+                                       0U,
+                                       2U,
+                                       NULL,
+                                       NULL,
+                                       &partial_result,
+                                       &error) &&
+                  neural_model_train_range(resumed,
+                                           &dataset,
+                                           &mini_batch,
+                                           &parallel,
+                                           2U,
+                                           mini_batch.epochs,
+                                           NULL,
+                                           NULL,
+                                           &resumed_result,
+                                           &error) &&
+                  models_equal(continuous, resumed) &&
+                  resumed_result.final_loss == continuous_result.final_loss,
+              "mini-batch epoch ranges must continue exactly");
+        check(neural_model_train(full,
+                                 &dataset,
+                                 &full_batch,
+                                 &serial,
+                                 NULL,
+                                 NULL,
+                                 &full_result,
+                                 &error) &&
+                  !models_equal(continuous, full),
+              "positive batch size must select mini-batch updates");
+        check(neural_model_train(oversized,
+                                 &dataset,
+                                 &oversized_batch,
+                                 &parallel,
+                                 NULL,
+                                 NULL,
+                                 &oversized_result,
+                                 &error) &&
+                  models_equal(full, oversized) &&
+                  full_result.final_loss == oversized_result.final_loss,
+              "oversized training batches must resolve to the full dataset");
+    }
+    neural_model_free(oversized);
+    neural_model_free(full);
+    neural_model_free(resumed);
+    neural_model_free(threaded);
+    neural_model_free(continuous);
+}
+
 int main(void)
 {
     test_xor_training_and_determinism();
     test_binary_cross_entropy_training();
     test_observer_failure();
     test_absolute_epoch_ranges();
+    test_mini_batch_determinism_and_continuation();
 
     if (failures != 0) {
         fprintf(stderr, "%d training-engine test(s) failed\n", failures);

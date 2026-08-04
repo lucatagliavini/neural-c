@@ -214,6 +214,7 @@ static void test_project_digests(NeuralProject *project,
     NeuralProjectDigests changed;
     neural_real original_input;
     size_t original_epochs;
+    size_t original_batch_size;
     NeuralLoss original_loss;
     NeuralError error;
 
@@ -249,6 +250,15 @@ static void test_project_digests(NeuralProject *project,
               strcmp(changed.dataset, digests->dataset) == 0,
           "training changes must affect only its canonical digest");
     project->training.epochs = original_epochs;
+
+    original_batch_size = project->training.batch_size;
+    project->training.batch_size = 3U;
+    check(neural_project_digests_compute(project, &changed, &error) &&
+              strcmp(changed.training, digests->training) != 0 &&
+              strcmp(changed.dataset, digests->dataset) == 0 &&
+              strcmp(changed.model, digests->model) == 0,
+          "mini-batch size must affect only training provenance");
+    project->training.batch_size = original_batch_size;
 
     original_loss = project->training.loss;
     project->training.loss = NEURAL_LOSS_BINARY_CROSS_ENTROPY;

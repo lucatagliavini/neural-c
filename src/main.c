@@ -183,6 +183,8 @@ static void print_usage(FILE *stream)
             "                              Default: %zu\n"
             "      --early-stopping-patience N Validation patience; 0 disables\n"
             "      --early-stopping-min-delta VALUE Minimum validation improvement\n"
+            "      --batch-size N         Training batch; 0 uses full dataset\n"
+            "                              Default: %zu\n"
             "\nTraining continuation:\n"
             "      --resume                Resume checkpoint.txt\n"
             "      --additional-epochs N  Refine weights.txt\n"
@@ -218,6 +220,7 @@ static void print_usage(FILE *stream)
             (uint64_t)NEURAL_DEFAULT_INIT_SEED,
             NEURAL_DEFAULT_INIT_LOSS,
             (size_t)NEURAL_DEFAULT_INIT_CHECKPOINT_INTERVAL,
+            (size_t)NEURAL_DEFAULT_INIT_BATCH_SIZE,
             (size_t)NEURAL_DEFAULT_THREAD_COUNT,
             (size_t)NEURAL_DEFAULT_REPORT_INTERVAL,
             (size_t)NEURAL_DEFAULT_PREDICTION_BATCH_SIZE);
@@ -513,7 +516,8 @@ static int command_init(const char *directory,
         NEURAL_LOSS_MSE,
         NEURAL_DEFAULT_INIT_CHECKPOINT_INTERVAL,
         NEURAL_DEFAULT_INIT_EARLY_STOPPING_PATIENCE,
-        NEURAL_DEFAULT_INIT_EARLY_STOPPING_MIN_DELTA
+        NEURAL_DEFAULT_INIT_EARLY_STOPPING_MIN_DELTA,
+        NEURAL_DEFAULT_INIT_BATCH_SIZE
     };
     NeuralError error;
     const char *loss_name;
@@ -612,6 +616,13 @@ static int command_init(const char *directory,
         neural_error_set(
             &error,
             "early-stopping-min-delta must be finite and non-negative");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_BATCH_SIZE) &&
+        !neural_parse_size(neural_option_value(options, OPTION_BATCH_SIZE),
+                           &training.batch_size)) {
+        neural_error_set(&error,
+                         "batch-size must be a non-negative integer for init");
         goto invalid;
     }
     if (!neural_training_config_validate(&training, &error)) {
@@ -1587,6 +1598,11 @@ static int command_inspect(const char *directory, int include_state)
     printf("Seed: %" PRIu64 "\n", project.training.seed);
     printf("Checkpoint interval: %zu\n",
            project.training.checkpoint_interval);
+    if (project.training.batch_size == 0U) {
+        printf("Batch size: full dataset\n");
+    } else {
+        printf("Batch size: %zu\n", project.training.batch_size);
+    }
     printf("Early stopping patience: %zu\n",
            project.training.early_stopping_patience);
     printf("Early stopping min delta: %.*g\n",
@@ -1685,6 +1701,9 @@ int main(int argc, char **argv)
         }
         if (has_options_in_range(&options,
                                  OPTION_RESUME,
+                                 OPTION_BATCH_SIZE) ||
+            has_options_in_range(&options,
+                                 OPTION_SCHEMA,
                                  OPTION_COUNT)) {
             fprintf(stderr,
                     "%s: training and execution options are invalid with init\n",

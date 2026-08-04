@@ -289,7 +289,7 @@ static int train_early_stopping_range(
         observer.metadata.stale_epochs = 0U;
         observer.has_best = 1;
     }
-    if (!neural_model_train_full_batch_range(
+    if (!neural_model_train_range(
             current_model,
             &project->dataset,
             &project->training,
@@ -539,7 +539,7 @@ int neural_project_train_fresh_controlled(
     }
     neural_project_checkpoint_observer_set_stop_request(&checkpoint_observer,
                                                         stop_request);
-    if (!neural_model_train_full_batch(model,
+    if (!neural_model_train(model,
                                        &project.dataset,
                                        &project.training,
                                        execution,
@@ -782,7 +782,7 @@ int neural_project_train_resume_controlled(
                     "completed checkpoint parameters do not match final weights");
                 goto cleanup;
             }
-            if (!neural_model_train_full_batch_range(
+            if (!neural_model_train_range(
                 weights_model,
                 &project.dataset,
                 &project.training,
@@ -830,7 +830,7 @@ int neural_project_train_resume_controlled(
     }
     neural_project_checkpoint_observer_set_stop_request(&checkpoint_observer,
                                                         stop_request);
-    if (!neural_model_train_full_batch_range(
+    if (!neural_model_train_range(
             checkpoint_model,
             &project.dataset,
             &project.training,
@@ -1029,7 +1029,7 @@ int neural_project_train_additional_controlled(
     }
     neural_project_checkpoint_observer_set_stop_request(&checkpoint_observer,
                                                         stop_request);
-    if (!neural_model_train_full_batch_range(
+    if (!neural_model_train_range(
             model,
             &project.dataset,
             &project.training,

@@ -32,7 +32,11 @@ mutually exclusive, and a target addition that would overflow `size_t` is
 rejected before disk mutation.
 
 A checkpoint always represents the boundary after a fully completed epoch.
-Interrupted partial epochs are discarded and repeated. Refinement refuses
+This remains sufficient for deterministic mini-batch training because sample
+order and batch boundaries are derived from immutable project configuration.
+An interruption is observed only at the next completed epoch boundary; a hard
+failure before that boundary persists no partial epoch, so recovery repeats
+from the prior coherent checkpoint. Refinement refuses
 while any checkpoint exists and directs the user to `--resume`. During active
 refinement both persistence files deliberately coexist: `weights.txt` remains
 the last stable baseline and `checkpoint.txt` owns the in-progress run.
@@ -135,6 +139,10 @@ than raw whitespace, so comments and formatting do not invalidate state.
 Thread count is deliberately absent from checkpoint metadata. Resume may use a
 different worker count because logical sample tasks and gradient reduction
 remain ordered as specified in `parallel-execution.md`.
+
+`batch_size` is deliberately different: it changes update boundaries, belongs
+to `project.conf`, and is covered by the training digest. Changing it makes
+existing weights and checkpoints fail provenance validation before mutation.
 
 ## Checkpoint Lifecycle
 

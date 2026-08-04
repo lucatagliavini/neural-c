@@ -54,7 +54,8 @@ values at compile time where possible.
 
 Protocol identity and version constants belong in `version.h`; public type
 sizes belong in the header that defines the type. Runtime behavior such as
-epochs, learning rate, loss, and random seed must remain in project files.
+epochs, learning rate, loss, random seed, and training batch size must remain
+in project files.
 Defaults used by `init` may be compile-time constants, but must be materialized
 in `project.conf`; training never reads hidden build defaults. Internal enum
 values, bit masks, array indexes, and
@@ -74,6 +75,12 @@ An existing checkpoint is removed for the same compatibility reason.
 Existing projects are exclusively locked before forced initialization changes
 any managed file. A newly created directory is exclusively locked before its
 project files are generated.
+
+`batch_size` is materialized in `project.conf`. Zero means one full-dataset
+update per epoch and is also the default for legacy files that omit the
+property. A positive value creates deterministic contiguous mini-batches; the
+last batch may be smaller. This training-owned value must not be confused with
+the execution-only prediction `--batch-size` option.
 
 ## Validation Policy
 

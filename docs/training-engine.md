@@ -33,12 +33,14 @@ test fixtures whose perturbations remain on one differentiable branch.
 
 ## Batch Semantics
 
-The internal trainer accepts a positive resolved batch size. Milestone 4 uses
-the dataset sample count, making one full batch per epoch, while tests also
-cover unit, partial, and incomplete final batches. Samples remain in source
-order and are not shuffled. Each batch gradient is the ordered sum of its
-sample gradients divided by the actual number of samples in that batch. The
-main thread performs exactly one exclusive model update per batch.
+`batch_size` is training-owned configuration in `project.conf`. Zero selects
+the complete dataset and preserves the historical full-batch behavior. A
+positive value selects that many source-order samples per update; values above
+the dataset sample count resolve to the complete dataset. Samples are not yet
+shuffled. Each batch gradient is the ordered sum of its sample gradients
+divided by the actual number of samples in that batch, including a smaller
+final batch. The main thread performs exactly one exclusive model update per
+batch.
 
 `NeuralBatchPlan` validates the resolved batch size and maps each batch to a
 contiguous half-open sample range. `NeuralBatchAccumulator` accepts gradients
@@ -50,9 +52,10 @@ out-of-order, or out-of-range additions do not advance its state. Neumaier
 compensation preserves small terms without changing the required sample order;
 every operation validates all results before changing either buffer.
 
-Batch size is not yet public configuration. When exposed, it must be owned by
-training configuration and its canonical digest because it changes parameter
-updates. It must never be treated like execution-only `thread_count`.
+Because batch size changes parameter updates, a positive configured value is
+covered by the canonical training digest. Zero retains the legacy canonical
+stream exactly. Batch size is never treated like execution-only
+`thread_count`.
 
 ## Parallel Execution
 
@@ -121,8 +124,8 @@ models together whenever a checkpoint is required.
 
 ## Completion
 
-Fresh training runs exactly the configured number of epochs, with one full
-batch and one model update per epoch. It is allowed only when neither
+Fresh training runs exactly the configured number of epochs, with one update
+per resolved batch. It is allowed only when neither
 `weights.txt` nor `checkpoint.txt` exists. The final model and canonical
 project digests are written atomically to `weights.txt` only after every epoch
 and report succeeds. Successful finalization installs `weights.txt` before
@@ -156,3 +159,7 @@ configured epoch count. Resume is the range from the validated checkpoint
 boundary to its validated target. Additional training is the range from the
 final weights' cumulative completed boundary to that boundary plus the checked
 requested increment.
+
+The public entry points are `neural_model_train` and
+`neural_model_train_range`; both resolve full-batch or mini-batch behavior from
+the supplied training configuration.

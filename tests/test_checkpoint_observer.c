@@ -377,7 +377,7 @@ static void test_payload_is_deterministic_across_workers(void)
     }
     check(prepared, "worker-determinism checkpoint fixture must be prepared");
     if (prepared) {
-        check(neural_model_train_full_batch(
+        check(neural_model_train(
                   serial_model,
                   &project.dataset,
                   &project.training,
@@ -386,7 +386,7 @@ static void test_payload_is_deterministic_across_workers(void)
                   &serial_observer,
                   &serial_result,
                   &error) &&
-                  neural_model_train_full_batch(
+                  neural_model_train(
                       parallel_model,
                       &project.dataset,
                       &project.training,
