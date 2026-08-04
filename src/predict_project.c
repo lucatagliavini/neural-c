@@ -10,6 +10,7 @@
 
 #include "neural/defaults.h"
 #include "neural/digest.h"
+#include "neural/loss.h"
 #include "neural/persistence.h"
 #include "neural/project.h"
 #include "path.h"
@@ -234,7 +235,12 @@ int neural_project_evaluation_load(const char *directory,
                              project.model.input_count,
                              output_count,
                              &loaded.dataset,
-                             error)) {
+                             error) ||
+        !neural_loss_validate_targets(project.training.loss,
+                                      loaded.dataset.outputs,
+                                      loaded.dataset.sample_count,
+                                      loaded.dataset.output_count,
+                                      error)) {
         goto cleanup;
     }
     loaded.loss = project.training.loss;

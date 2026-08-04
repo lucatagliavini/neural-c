@@ -38,6 +38,8 @@ static void check_error_contains(const NeuralError *error,
 
 static void test_core_contract(void)
 {
+    NeuralLoss loss;
+
     check(sizeof(neural_real) == sizeof(double),
           "neural_real must use double precision");
     check(strcmp(neural_name(), "neural-c") == 0,
@@ -81,6 +83,12 @@ static void test_core_contract(void)
               isfinite(NEURAL_DEFAULT_GRADIENT_CHECK_RELATIVE_TOLERANCE) &&
               NEURAL_DEFAULT_GRADIENT_CHECK_RELATIVE_TOLERANCE >= 0.0,
           "default gradient-check tolerances must be finite and non-negative");
+    check(neural_loss_from_name("binary_cross_entropy", &loss) &&
+              loss == NEURAL_LOSS_BINARY_CROSS_ENTROPY &&
+              strcmp(neural_loss_name(loss), "binary_cross_entropy") == 0 &&
+              neural_loss_from_name("categorical_cross_entropy", &loss) &&
+              loss == NEURAL_LOSS_CATEGORICAL_CROSS_ENTROPY,
+          "all public loss names must round-trip");
 }
 
 static void test_real_parser_locale_independence(void)
@@ -257,6 +265,11 @@ static void test_valid_loaders(void)
               &error) &&
               config.checkpoint_interval == 0U,
           "zero checkpoint interval must disable periodic saves");
+    check(neural_training_config_load("tests/fixtures/config_bce.txt",
+                                      &config,
+                                      &error) &&
+              config.loss == NEURAL_LOSS_BINARY_CROSS_ENTROPY,
+          "binary cross-entropy configuration must load");
 
     check(neural_dataset_load("tests/fixtures/dataset_valid.txt",
                               3U,
@@ -463,6 +476,7 @@ static void test_project_initialization(void)
     NeuralTrainingConfig training = {
         500U, 0.125, UINT64_C(7), NEURAL_LOSS_MSE, 50U, 0U, 0.0
     };
+    NeuralTrainingConfig incompatible_training = training;
     NeuralModelSpec loaded_model;
     NeuralTrainingConfig loaded_training;
     NeuralError error;
@@ -471,6 +485,15 @@ static void test_project_initialization(void)
     FILE *stream;
 
     remove_init_fixture(directory);
+    incompatible_training.loss = NEURAL_LOSS_BINARY_CROSS_ENTROPY;
+    check(!neural_project_initialize(directory,
+                                     &replacement_model,
+                                     &incompatible_training,
+                                     0,
+                                     &error),
+          "initialization must reject incompatible loss and output activation");
+    check(lstat(directory, &status) != 0 && errno == ENOENT,
+          "incompatible initialization must fail before filesystem changes");
     check(!neural_project_initialize(directory,
                                      &invalid_model,
                                      &training,

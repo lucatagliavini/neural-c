@@ -214,6 +214,7 @@ static void test_project_digests(NeuralProject *project,
     NeuralProjectDigests changed;
     neural_real original_input;
     size_t original_epochs;
+    NeuralLoss original_loss;
     NeuralError error;
 
     check(neural_project_digests_compute(project, digests, &error),
@@ -248,6 +249,17 @@ static void test_project_digests(NeuralProject *project,
               strcmp(changed.dataset, digests->dataset) == 0,
           "training changes must affect only its canonical digest");
     project->training.epochs = original_epochs;
+
+    original_loss = project->training.loss;
+    project->training.loss = NEURAL_LOSS_BINARY_CROSS_ENTROPY;
+    check(neural_project_digests_compute(project, &changed, &error) &&
+              strcmp(changed.training, digests->training) != 0,
+          "a compatible cross-entropy must change training provenance");
+    project->training.loss = NEURAL_LOSS_CATEGORICAL_CROSS_ENTROPY;
+    check(!neural_project_digests_compute(project, &changed, &error) &&
+              strstr(error.message, "softmax") != NULL,
+          "digest computation must reject incompatible loss contracts");
+    project->training.loss = original_loss;
 }
 
 static void test_weights_round_trip(const NeuralProject *project,

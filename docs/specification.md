@@ -35,6 +35,8 @@ evaluation, history, and early stopping are defined in
 `observability-evaluation.md`.
 CSV ingestion, bulk input, split provenance, normalization, and missing-value
 rules are authoritative in `data-interfaces.md`.
+Configured loss, output activation, target-domain, normalization, and fused
+gradient rules are authoritative in `losses.md`.
 
 Thread count is execution-only configuration supplied by `--threads`; it must
 not appear in project files, digests, weights, or checkpoints. Parallel code

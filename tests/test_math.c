@@ -1,5 +1,6 @@
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "neural/activation.h"
 #include "neural/dense.h"
@@ -118,6 +119,87 @@ static void test_loss_operations(void)
           "MSE gradient must succeed");
     check(gradient[0] == 1.0 && gradient[1] == 2.0,
           "MSE gradient must include output-count normalization");
+
+    {
+        const neural_real logits[] = {0.0, 0.0};
+        const neural_real probabilities[] = {0.5, 0.5};
+        const neural_real binary_targets[] = {0.0, 1.0};
+
+        check(neural_loss_evaluate_with_logits(
+                  NEURAL_LOSS_BINARY_CROSS_ENTROPY,
+                  NEURAL_ACTIVATION_SIGMOID,
+                  logits,
+                  probabilities,
+                  binary_targets,
+                  2U,
+                  &value,
+                  &error) && fabs(value - log(2.0)) < 1e-15,
+              "binary cross-entropy must use stable logits");
+        check(neural_loss_pre_activation_gradient(
+                  NEURAL_LOSS_BINARY_CROSS_ENTROPY,
+                  NEURAL_ACTIVATION_SIGMOID,
+                  probabilities,
+                  binary_targets,
+                  2U,
+                  gradient,
+                  &error) && gradient[0] == 0.25 && gradient[1] == -0.25,
+              "sigmoid binary cross-entropy must use its fused gradient");
+    }
+    {
+        const neural_real logits[] = {1000.0, 0.0, -1000.0};
+        const neural_real probabilities[] = {1.0, 0.0, 0.0};
+        const neural_real categorical_target[] = {1.0, 0.0, 0.0};
+        neural_real categorical_gradient[3];
+
+        check(neural_loss_evaluate_with_logits(
+                  NEURAL_LOSS_CATEGORICAL_CROSS_ENTROPY,
+                  NEURAL_ACTIVATION_SOFTMAX,
+                  logits,
+                  probabilities,
+                  categorical_target,
+                  3U,
+                  &value,
+                  &error) && value == 0.0,
+              "categorical cross-entropy must remain finite for extreme logits");
+        check(neural_loss_pre_activation_gradient(
+                  NEURAL_LOSS_CATEGORICAL_CROSS_ENTROPY,
+                  NEURAL_ACTIVATION_SOFTMAX,
+                  probabilities,
+                  categorical_target,
+                  3U,
+                  categorical_gradient,
+                  &error) && categorical_gradient[0] == 0.0 &&
+                  categorical_gradient[1] == 0.0 &&
+                  categorical_gradient[2] == 0.0,
+              "softmax categorical cross-entropy must use p minus y");
+    }
+    {
+        const neural_real invalid_target[] = {0.5};
+        const neural_real invalid_probability[] = {1.5};
+        const neural_real binary_target[] = {1.0};
+
+        check(!neural_loss_validate_output(
+                  NEURAL_LOSS_BINARY_CROSS_ENTROPY,
+                  NEURAL_ACTIVATION_LINEAR,
+                  1U,
+                  &error) && strstr(error.message, "sigmoid") != NULL,
+              "binary cross-entropy must reject non-sigmoid outputs");
+        check(!neural_loss_validate_targets(
+                  NEURAL_LOSS_BINARY_CROSS_ENTROPY,
+                  invalid_target,
+                  1U,
+                  1U,
+                  &error) && strstr(error.message, "zero or one") != NULL,
+              "binary cross-entropy must reject non-binary targets");
+        check(!neural_loss_evaluate(NEURAL_LOSS_BINARY_CROSS_ENTROPY,
+                                    invalid_probability,
+                                    binary_target,
+                                    1U,
+                                    &value,
+                                    &error) &&
+                  strstr(error.message, "probabilities") != NULL,
+              "cross-entropy must reject values outside probability range");
+    }
 }
 
 static void test_activation_backward(void)

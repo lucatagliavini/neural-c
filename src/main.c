@@ -176,7 +176,9 @@ static void print_usage(FILE *stream)
             "      --epochs N             Default: %zu\n"
             "      --learning-rate VALUE  Default: %.*g\n"
             "      --seed N               Default: %" PRIu64 "\n"
-            "      --loss NAME            Default: %s\n"
+            "      --loss NAME            mse, binary_cross_entropy, or\n"
+            "                              categorical_cross_entropy\n"
+            "                              Default: %s\n"
             "      --checkpoint-interval N Periodic interval; 0 disables\n"
             "                              Default: %zu\n"
             "      --early-stopping-patience N Validation patience; 0 disables\n"
@@ -1208,7 +1210,10 @@ static int command_evaluate(const char *project,
     NeuralExecutionConfig execution = {NEURAL_DEFAULT_THREAD_COUNT};
     NeuralEvaluationSnapshot snapshot = NEURAL_EVALUATION_SNAPSHOT_INITIALIZER;
     NeuralEvaluationResult evaluation = {0};
+    NeuralWorkspace *loss_workspace = NULL;
     neural_real *outputs = NULL;
+    neural_real *sample_output = NULL;
+    neural_real stable_loss;
     NeuralError error;
     const char *dataset_name = neural_option_is_present(options, OPTION_DATASET)
                                    ? neural_option_value(options, OPTION_DATASET)
@@ -1258,9 +1263,21 @@ static int command_evaluate(const char *project,
     output_value_count = snapshot.dataset.sample_count *
                          snapshot.dataset.output_count;
     outputs = malloc(output_value_count * sizeof(*outputs));
-    if (outputs == NULL) {
+    if (snapshot.loss != NEURAL_LOSS_MSE) {
+        sample_output = malloc(snapshot.dataset.output_count *
+                               sizeof(*sample_output));
+    }
+    if (outputs == NULL ||
+        (snapshot.loss != NEURAL_LOSS_MSE && sample_output == NULL)) {
         fprintf(stderr, "%s: unable to allocate evaluation outputs\n",
                 neural_name());
+        goto cleanup;
+    }
+    if (snapshot.loss != NEURAL_LOSS_MSE &&
+        !neural_workspace_create(snapshot.prediction.model,
+                                 &loss_workspace,
+                                 &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
         goto cleanup;
     }
     if (!neural_prediction_run(&snapshot.prediction,
@@ -1281,6 +1298,19 @@ static int command_evaluate(const char *project,
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
         goto cleanup;
     }
+    stable_loss = evaluation.loss;
+    if (snapshot.loss != NEURAL_LOSS_MSE &&
+        !neural_model_evaluate_dataset_loss(snapshot.prediction.model,
+                                            loss_workspace,
+                                            sample_output,
+                                            &snapshot.dataset,
+                                            snapshot.loss,
+                                            &stable_loss,
+                                            &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        goto cleanup;
+    }
+    evaluation.loss = stable_loss;
     printf("%s evaluation %zu\n",
            NEURAL_FORMAT_MAGIC,
            snapshot.prediction.format_version == 2U
@@ -1340,6 +1370,8 @@ static int command_evaluate(const char *project,
 
 cleanup:
     neural_evaluation_result_free(&evaluation);
+    neural_workspace_free(loss_workspace);
+    free(sample_output);
     free(outputs);
     neural_evaluation_snapshot_free(&snapshot);
     return result;

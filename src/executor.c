@@ -52,11 +52,21 @@ static int executor_dataset_validate(const NeuralModel *model,
         dataset->inputs == NULL || dataset->outputs == NULL ||
         dataset->input_count != neural_model_input_count(model) ||
         dataset->output_count != neural_model_output_count(model) ||
-        loss != NEURAL_LOSS_MSE ||
         dataset->input_count > SIZE_MAX / dataset->sample_count ||
         dataset->output_count > SIZE_MAX / dataset->sample_count) {
         neural_error_set(error,
                          "executor dataset must match a non-empty model");
+        return 0;
+    }
+    if (!neural_loss_validate_output(loss,
+                                     neural_model_output_activation(model),
+                                     dataset->output_count,
+                                     error) ||
+        !neural_loss_validate_targets(loss,
+                                      dataset->outputs,
+                                      dataset->sample_count,
+                                      dataset->output_count,
+                                      error)) {
         return 0;
     }
     input_value_count = dataset->sample_count * dataset->input_count;

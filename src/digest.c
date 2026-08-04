@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "neural/activation.h"
+#include "neural/loss.h"
 #include "neural/version.h"
 #include "sha256.h"
 
@@ -253,6 +254,19 @@ int neural_project_digests_compute(const NeuralProject *project,
         !validate_dataset(&project->model, &project->dataset, error)) {
         return 0;
     }
+    if (!neural_loss_validate_output(
+            project->training.loss,
+            project->model.layers[project->model.layer_count - 1U]
+                .activation.kind,
+            project->dataset.output_count,
+            error) ||
+        !neural_loss_validate_targets(project->training.loss,
+                                      project->dataset.outputs,
+                                      project->dataset.sample_count,
+                                      project->dataset.output_count,
+                                      error)) {
+        return 0;
+    }
     if (project->training.early_stopping_patience != 0U &&
         (!project->has_validation ||
          !validate_dataset(&project->model, &project->validation, error))) {
@@ -260,6 +274,14 @@ int neural_project_digests_compute(const NeuralProject *project,
             neural_error_set(error,
                              "early stopping requires validation dataset");
         }
+        return 0;
+    }
+    if (project->training.early_stopping_patience != 0U &&
+        !neural_loss_validate_targets(project->training.loss,
+                                      project->validation.outputs,
+                                      project->validation.sample_count,
+                                      project->validation.output_count,
+                                      error)) {
         return 0;
     }
     digest_dataset(&project->dataset, digests->dataset);

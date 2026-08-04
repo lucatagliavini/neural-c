@@ -74,6 +74,12 @@ preprocessing preserve the legacy dataset digest exactly. The format and fit
 rules are in `data-interfaces.md`.
 Changing any owned value changes only its corresponding digest.
 
+Milestone 9.1 adds loss names without changing persistence payload versions.
+Existing `mse` canonical streams and digests remain byte-for-byte unchanged.
+Binary and categorical cross-entropy use their canonical names in the same
+stream, so persistence produced for one loss cannot be loaded under another.
+Loss/output/target rules are defined in `losses.md`.
+
 ## Atomic Replacement
 
 Writers create a unique `*.tmp.XXXXXX` file beside the destination, write and

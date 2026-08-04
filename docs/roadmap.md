@@ -91,7 +91,7 @@
   - **8.5 — complete:** define missing-value policy and reject, impute, or transform values
     only through explicit persisted configuration.
 - **Milestone 9 — losses and configurable gradient descent:**
-  - **9.1:** generalize the loss contract and add numerically stable binary and
+  - **9.1 — complete:** generalize the loss contract and add numerically stable binary and
     categorical cross-entropy, including the fused softmax/cross-entropy path,
     gradient checks, and compatibility validation between targets, outputs,
     activations, and loss.
@@ -156,6 +156,7 @@ x86-64/ppc64le round trips.
 
 Read `specification.md`, `model-runtime.md`, `training-engine.md`,
 `parallel-execution.md`, `project-locking.md`, `persistence-format.md`,
-`training-resume.md`, `prediction.md`, and `runtime-validation.md` before
+`training-resume.md`, `prediction.md`, `losses.md`, and
+`runtime-validation.md` before
 changing execution, formats, training state, inference, persistence, or
 cross-architecture validation semantics.

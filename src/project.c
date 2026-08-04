@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 
 #include "neural/defaults.h"
+#include "neural/loss.h"
 #include "neural/parse.h"
 #include "neural/version.h"
 #include "path.h"
@@ -770,7 +771,7 @@ int neural_training_config_load(const char *path,
             }
         } else if (strcmp(tokens.items[0], "loss") == 0) {
             field = FIELD_LOSS;
-            if (strcmp(tokens.items[1], "mse") != 0) {
+            if (!neural_loss_from_name(tokens.items[1], &config->loss)) {
                 neural_error_set(error,
                                  "%s:%zu: unknown loss '%s'",
                                  path,
@@ -778,7 +779,6 @@ int neural_training_config_load(const char *path,
                                  tokens.items[1]);
                 goto cleanup;
             }
-            config->loss = NEURAL_LOSS_MSE;
         } else if (strcmp(tokens.items[0], "checkpoint_interval") == 0) {
             field = FIELD_CHECKPOINT_INTERVAL;
             if (!neural_parse_size(tokens.items[1],
@@ -1101,6 +1101,16 @@ int neural_project_load(const char *directory,
                                      error)) {
         goto cleanup;
     }
+    output_count = project->model.layers[project->model.layer_count - 1U]
+                       .neuron_count;
+    if (!neural_loss_validate_output(
+            project->training.loss,
+            project->model.layers[project->model.layer_count - 1U]
+                .activation.kind,
+            output_count,
+            error)) {
+        goto cleanup;
+    }
     preprocessing_path = neural_path_join(
         directory, NEURAL_DEFAULT_PREPROCESSING_FILENAME, error);
     if (preprocessing_path == NULL) {
@@ -1127,13 +1137,16 @@ int neural_project_load(const char *directory,
                          strerror(errno));
         goto cleanup;
     }
-    output_count = project->model.layers[project->model.layer_count - 1U]
-                       .neuron_count;
     if (!neural_dataset_load(dataset_path,
                              project->model.input_count,
                              output_count,
                              &project->dataset,
-                             error)) {
+                             error) ||
+        !neural_loss_validate_targets(project->training.loss,
+                                      project->dataset.outputs,
+                                      project->dataset.sample_count,
+                                      project->dataset.output_count,
+                                      error)) {
         goto cleanup;
     }
     if (project->training.early_stopping_patience != 0U) {
@@ -1145,7 +1158,12 @@ int neural_project_load(const char *directory,
                                  project->model.input_count,
                                  output_count,
                                  &project->validation,
-                                 error)) {
+                                 error) ||
+            !neural_loss_validate_targets(project->training.loss,
+                                          project->validation.outputs,
+                                          project->validation.sample_count,
+                                          project->validation.output_count,
+                                          error)) {
             goto cleanup;
         }
         project->has_validation = 1;
@@ -1169,6 +1187,10 @@ const char *neural_loss_name(NeuralLoss loss)
     switch (loss) {
     case NEURAL_LOSS_MSE:
         return "mse";
+    case NEURAL_LOSS_BINARY_CROSS_ENTROPY:
+        return "binary_cross_entropy";
+    case NEURAL_LOSS_CATEGORICAL_CROSS_ENTROPY:
+        return "categorical_cross_entropy";
     }
     return "unknown";
 }
@@ -1180,7 +1202,12 @@ int neural_loss_from_name(const char *name, NeuralLoss *loss)
     }
     if (strcmp(name, "mse") == 0) {
         *loss = NEURAL_LOSS_MSE;
-        return 1;
+    } else if (strcmp(name, "binary_cross_entropy") == 0) {
+        *loss = NEURAL_LOSS_BINARY_CROSS_ENTROPY;
+    } else if (strcmp(name, "categorical_cross_entropy") == 0) {
+        *loss = NEURAL_LOSS_CATEGORICAL_CROSS_ENTROPY;
+    } else {
+        return 0;
     }
-    return 0;
+    return 1;
 }

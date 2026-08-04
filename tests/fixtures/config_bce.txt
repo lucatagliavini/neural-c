@@ -1,0 +1,7 @@
+neural-c project 1
+
+epochs 250
+learning_rate 0.25
+seed 42
+loss binary_cross_entropy
+checkpoint_interval 0

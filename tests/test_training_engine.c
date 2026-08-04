@@ -89,6 +89,7 @@ static int models_equal(const NeuralModel *left, const NeuralModel *right)
 
 static int evaluate_loss(const NeuralModel *model,
                          const NeuralDataset *dataset,
+                         NeuralLoss loss_kind,
                          neural_real *mean,
                          NeuralError *error)
 {
@@ -114,8 +115,13 @@ static int evaluate_loss(const NeuralModel *model,
                 predicted,
                 dataset->output_count,
                 error) ||
-            !neural_loss_evaluate(
-                NEURAL_LOSS_MSE,
+            !neural_loss_evaluate_with_logits(
+                loss_kind,
+                neural_model_output_activation(model),
+                neural_workspace_layer_pre_activations(
+                    workspace,
+                    neural_model_layer_count(model) - 1U,
+                    NULL),
                 predicted,
                 dataset->outputs + sample_index * dataset->output_count,
                 dataset->output_count,
@@ -202,11 +208,73 @@ static void test_xor_training_and_determinism(void)
               "training must be bit-identical across worker counts");
         check(evaluate_loss(serial_model,
                             &dataset,
+                            training.loss,
                             &verified_loss,
                             &error) &&
                   fabs(verified_loss - serial_result.final_loss) < 1e-15 &&
                   serial_result.final_loss < 0.001,
               "reported final loss must describe the converged model");
+    }
+    neural_model_free(parallel_model);
+    neural_model_free(serial_model);
+}
+
+static void test_binary_cross_entropy_training(void)
+{
+    NeuralLayerSpec layers[] = {
+        {2U, {NEURAL_ACTIVATION_SIGMOID, 0U, NULL}},
+        {1U, {NEURAL_ACTIVATION_SIGMOID, 0U, NULL}}
+    };
+    NeuralModelSpec spec = {2U, 2U, layers};
+    neural_real inputs[] = {
+        0.0, 0.0,
+        0.0, 1.0,
+        1.0, 0.0,
+        1.0, 1.0
+    };
+    neural_real outputs[] = {0.0, 1.0, 1.0, 0.0};
+    NeuralDataset dataset = {4U, 2U, 1U, inputs, outputs};
+    NeuralTrainingConfig training = {
+        5000U, 0.5, UINT64_C(42),
+        NEURAL_LOSS_BINARY_CROSS_ENTROPY, 0U, 0U, 0.0
+    };
+    NeuralExecutionConfig serial = {1U};
+    NeuralExecutionConfig parallel = {4U};
+    NeuralModel *serial_model = NULL;
+    NeuralModel *parallel_model = NULL;
+    NeuralTrainingResult serial_result;
+    NeuralTrainingResult parallel_result;
+    NeuralError error;
+    int prepared;
+
+    prepared = neural_model_create(&spec, training.seed,
+                                   &serial_model, &error) &&
+               neural_model_create(&spec, training.seed,
+                                   &parallel_model, &error);
+    check(prepared, "binary cross-entropy training models must be prepared");
+    if (prepared) {
+        check(neural_model_train_full_batch(serial_model,
+                                            &dataset,
+                                            &training,
+                                            &serial,
+                                            NULL,
+                                            NULL,
+                                            &serial_result,
+                                            &error) &&
+                  neural_model_train_full_batch(parallel_model,
+                                                &dataset,
+                                                &training,
+                                                &parallel,
+                                                NULL,
+                                                NULL,
+                                                &parallel_result,
+                                                &error),
+              "binary cross-entropy XOR training must complete");
+        check(models_equal(serial_model, parallel_model) &&
+                  serial_result.final_loss == parallel_result.final_loss,
+              "binary cross-entropy training must be thread-independent");
+        check(serial_result.final_loss < 0.01,
+              "binary cross-entropy training must converge on XOR");
     }
     neural_model_free(parallel_model);
     neural_model_free(serial_model);
@@ -362,6 +430,7 @@ static void test_absolute_epoch_ranges(void)
 int main(void)
 {
     test_xor_training_and_determinism();
+    test_binary_cross_entropy_training();
     test_observer_failure();
     test_absolute_epoch_ranges();
 

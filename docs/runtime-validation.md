@@ -102,3 +102,8 @@ loads each architecture's weights under the other runtime, interrupts training
 on each side, and resumes the checkpoint on the other. Successful runs remove
 their generated projects. Set `KEEP_CROSS_RUNTIME_ARTIFACTS=1` only while
 diagnosing a failure.
+
+The matrix also imports, trains, and predicts an independently created
+softmax/categorical-cross-entropy project on both architectures. Its canonical
+training digest is exact and its predictions use the floating-point tolerance
+above.

@@ -25,6 +25,8 @@ Native and emulated architecture qualification is defined in
 [`docs/runtime-validation.md`](docs/runtime-validation.md).
 Bulk input, CSV schemas, splitting, normalization, and missing-value ownership
 are defined in [`docs/data-interfaces.md`](docs/data-interfaces.md).
+Loss, activation, target, and fused-gradient contracts are defined in
+[`docs/losses.md`](docs/losses.md).
 
 ## Project format
 
@@ -50,6 +52,10 @@ dense 4 elu alpha=1
 rows in the form `0 1 -> 1`. The loader derives the output width from the final
 layer and validates every dataset row before execution. Blank lines and `#`
 comments are accepted; unknown or duplicate properties are rejected.
+
+Supported losses are `mse`, `binary_cross_entropy` for sigmoid outputs with
+binary targets, and `categorical_cross_entropy` for softmax outputs with
+one-hot targets. Existing MSE projects remain fully compatible.
 
 Strict CSV ingestion can build the native datasets and persisted preprocessing
 without column guessing:

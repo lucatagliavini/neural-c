@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #include "neural/defaults.h"
+#include "neural/loss.h"
 #include "neural/parse.h"
 #include "neural/project.h"
 #include "neural/random.h"
@@ -1445,6 +1446,13 @@ int neural_data_import_csv(const char *project_directory,
         goto cleanup;
     }
     output_count = model.layers[model.layer_count - 1U].neuron_count;
+    if (!neural_loss_validate_output(
+            training.loss,
+            model.layers[model.layer_count - 1U].activation.kind,
+            output_count,
+            error)) {
+        goto cleanup;
+    }
     if (!path_exists_regular(project_directory,
                              NEURAL_DEFAULT_WEIGHTS_FILENAME,
                              &weights_exists, error) ||
@@ -1463,6 +1471,11 @@ int neural_data_import_csv(const char *project_directory,
         !schema_load(config->schema_path, model.input_count, output_count,
                      &schema, error) ||
         !csv_load(csv_path, &schema, output_count, &rows, error) ||
+        !neural_loss_validate_targets(training.loss,
+                                      rows.outputs,
+                                      rows.sample_count,
+                                      output_count,
+                                      error) ||
         !create_split(&rows, &schema, config, &assignment, result, error)) {
         goto cleanup;
     }

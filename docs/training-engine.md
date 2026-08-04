@@ -12,6 +12,9 @@ and the model-input gradient. A workspace belongs to one model and one worker;
 no forward or backward call allocates per sample. A single-sample operation
 runs forward, evaluates the configured loss, and fills a model-compatible
 `NeuralGradient` without changing model parameters.
+Output activation and targets must satisfy `losses.md`. Cross-entropy paths
+evaluate logits directly and install their fused pre-activation gradient before
+dense backward; MSE retains the ordinary activation Jacobian path.
 
 ## Gradient Checking
 

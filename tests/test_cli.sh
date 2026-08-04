@@ -93,6 +93,18 @@ wait_for_training_lock() {
     return 1
 }
 
+set +e
+invalid_loss_output=$(
+    "$executable" init "$project_dir" --inputs 1 --layer 1:linear \
+        --loss binary_cross_entropy 2>&1
+)
+invalid_loss_status=$?
+set -e
+[[ $invalid_loss_status -eq 2 ]]
+grep -q 'binary_cross_entropy requires sigmoid output' \
+    <<<"$invalid_loss_output"
+[[ ! -e $project_dir ]]
+
 "$executable" init "$project_dir" \
     --inputs 3 \
     --layer 4:leaky_relu:alpha=0.01 \
@@ -537,7 +549,7 @@ grep -q 'checkpoint.txt already exists' <<<"$checkpoint_output"
 [[ ! -e "$training_dir/weights.txt" ]]
 
 "$executable" init "$import_dir" --inputs 4 --layer 3:softmax \
-    --epochs 2 --checkpoint-interval 0
+    --epochs 2 --loss categorical_cross_entropy --checkpoint-interval 0
 import_output=$(
     "$executable" import-csv "$import_dir" tests/fixtures/iris-small.csv \
         --schema tests/fixtures/iris-schema.txt \
@@ -552,11 +564,17 @@ grep -q '^normalization standardize$' "$import_dir/preprocessing.txt"
 grep -q '^missing mean$' "$import_dir/preprocessing.txt"
 grep -q '^split_algorithm global_largest_remainder_v1$' \
     "$import_dir/preprocessing.txt"
+grep -q '^loss categorical_cross_entropy$' "$import_dir/project.conf"
 [[ $(grep -c ' -> ' "$import_dir/train.txt") -eq 12 ]]
 [[ $(grep -c ' -> ' "$import_dir/validation.txt") -eq 3 ]]
 [[ $(grep -c ' -> ' "$import_dir/test.txt") -eq 3 ]]
 "$executable" inspect "$import_dir" >/dev/null
 "$executable" train "$import_dir" --threads 2 >/dev/null
+import_evaluation=$(
+    "$executable" evaluate "$import_dir" --dataset test --threads 2
+)
+grep -q '^classification yes$' <<<"$import_evaluation"
+grep -q '^loss ' <<<"$import_evaluation"
 import_prediction=$(
     "$executable" predict "$import_dir" 5.1 3.5 1.4 '?' --threads 2
 )

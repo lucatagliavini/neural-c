@@ -54,12 +54,18 @@ int neural_model_evaluate_dataset_loss(const NeuralModel *model,
                                   predicted,
                                   dataset->output_count,
                                   error) ||
-            !neural_loss_evaluate(loss,
-                                  predicted,
-                                  expected,
-                                  dataset->output_count,
-                                  &sample_loss,
-                                  error) ||
+            !neural_loss_evaluate_with_logits(
+                loss,
+                neural_model_output_activation(model),
+                neural_workspace_layer_pre_activations(
+                    workspace,
+                    neural_model_layer_count(model) - 1U,
+                    NULL),
+                predicted,
+                expected,
+                dataset->output_count,
+                &sample_loss,
+                error) ||
             !neural_compensated_add(sum,
                                     compensation,
                                     sample_loss,
@@ -230,6 +236,17 @@ int neural_evaluation_compute(NeuralLoss loss,
         return 0;
     }
     *result = computed;
+    if (!neural_loss_validate_output(loss,
+                                     output_activation,
+                                     output_count,
+                                     error) ||
+        !neural_loss_validate_targets(loss,
+                                      expected,
+                                      sample_count,
+                                      output_count,
+                                      error)) {
+        return 0;
+    }
     computed.sample_count = sample_count;
     computed.output_count = output_count;
     binary = output_count == 1U &&

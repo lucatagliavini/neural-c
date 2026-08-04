@@ -17,6 +17,8 @@ int neural_model_sample_gradient(const NeuralModel *model,
 {
     size_t output_count;
     size_t layer_index;
+    NeuralActivationKind output_activation;
+    int fused_output;
 
     if (model == NULL || workspace == NULL || gradient == NULL ||
         inputs == NULL || expected == NULL || loss_value == NULL ||
@@ -27,6 +29,8 @@ int neural_model_sample_gradient(const NeuralModel *model,
         return 0;
     }
     output_count = neural_model_output_count(model);
+    output_activation = neural_model_output_activation(model);
+    fused_output = loss != NEURAL_LOSS_MSE;
     if (input_count != model->input_count || expected_count != output_count) {
         neural_error_set(error,
                          "sample-gradient dimensions do not match model");
@@ -40,19 +44,33 @@ int neural_model_sample_gradient(const NeuralModel *model,
             workspace->activation_gradients[model->layer_count - 1U],
             output_count,
             error) ||
-        !neural_loss_evaluate(loss,
-                              workspace->activations[model->layer_count - 1U],
-                              expected,
-                              output_count,
-                              loss_value,
-                              error) ||
-        !neural_loss_gradient(
+        !neural_loss_evaluate_with_logits(
             loss,
+            output_activation,
+            workspace->pre_activations[model->layer_count - 1U],
             workspace->activations[model->layer_count - 1U],
             expected,
             output_count,
-            workspace->activation_gradients[model->layer_count - 1U],
-            error)) {
+            loss_value,
+            error) ||
+        (fused_output
+             ? !neural_loss_pre_activation_gradient(
+                   loss,
+                   output_activation,
+                   workspace->activations[model->layer_count - 1U],
+                   expected,
+                   output_count,
+                   workspace->pre_activation_gradients[
+                       model->layer_count - 1U],
+                   error)
+             : !neural_loss_gradient(
+                   loss,
+                   workspace->activations[model->layer_count - 1U],
+                   expected,
+                   output_count,
+                   workspace->activation_gradients[
+                       model->layer_count - 1U],
+                   error))) {
         return 0;
     }
 
@@ -85,15 +103,18 @@ int neural_model_sample_gradient(const NeuralModel *model,
                              layer_index);
             return 0;
         }
-        if (!neural_activation_backward(
-                &layer->activation,
-                workspace->pre_activations[layer_index],
-                workspace->activations[layer_index],
-                workspace->activation_gradients[layer_index],
-                workspace->pre_activation_gradients[layer_index],
-                layer->neuron_count,
-                error) ||
-            !neural_dense_backward(
+        if ((!fused_output || layer_index != model->layer_count - 1U) &&
+            !neural_activation_backward(
+                 &layer->activation,
+                 workspace->pre_activations[layer_index],
+                 workspace->activations[layer_index],
+                 workspace->activation_gradients[layer_index],
+                 workspace->pre_activation_gradients[layer_index],
+                 layer->neuron_count,
+                 error)) {
+            return 0;
+        }
+        if (!neural_dense_backward(
                 layer->weights,
                 layer->weight_count,
                 layer_inputs,

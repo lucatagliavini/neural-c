@@ -67,7 +67,8 @@ generic `math.c`:
 
 - `dense.c` implements neuron-major dense forward and single-sample backward.
 - `activation.c` implements activation forward and Jacobian-vector products.
-- `loss.c` implements MSE and its derivative.
+- `loss.c` implements MSE and stable binary/categorical cross-entropy,
+  compatibility validation, and fused output gradients.
 - `tensor_ops.c` implements checked zero, ordered addition, and scaling.
 - `compensated_sum.c` implements the shared finite Neumaier scalar step.
 - `gradient.c` owns model-shaped gradient storage, transactional addition,
@@ -78,15 +79,17 @@ generic `math.c`:
 - `executor.c` owns the persistent pthread pool and bounded execution waves;
   it never applies gradients to the model.
 
-MSE is the mean of squared output differences; its derivative is normalized by
-the output count. Dense backward produces gradients for inputs, weights, and
-biases without modifying the model. At non-differentiable zero, ReLU uses
+MSE is the mean of squared output differences. Sigmoid/BCE and softmax/CCE use
+logits-based stable evaluation and fused pre-activation gradients; their exact
+target and normalization rules are defined in `losses.md`. Dense backward
+produces gradients for inputs, weights, and biases without modifying the model.
+At non-differentiable zero, ReLU uses
 derivative 0 and leaky ReLU uses the non-negative branch derivative 1. Softmax
 backward computes the full Jacobian-vector product rather than an element-wise
 approximation.
 
-`neural_model_sample_gradient` performs forward evaluation, MSE evaluation,
-and reverse traversal into a model-compatible `NeuralGradient`. It requires a
+`neural_model_sample_gradient` performs forward evaluation, configured-loss
+evaluation, and reverse traversal into a model-compatible `NeuralGradient`. It requires a
 workspace and gradient owned by the same exact model. Output values are valid
 only on success; a failed sample must never participate in batch reduction.
 

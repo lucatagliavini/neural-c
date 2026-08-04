@@ -44,7 +44,8 @@ end
 ```
 
 Numeric targets instead use `targets COLUMN...` and must match the model output
-width. Column indices are zero-based. Categorical names are single exact UTF-8
+width. They must also satisfy the configured target domain from `losses.md`.
+Column indices are zero-based. Categorical names are single exact UTF-8
 tokens and every class line supplies the complete numeric output vector.
 
 CSV fields support unquoted text, quoted fields, and doubled quotes. Embedded

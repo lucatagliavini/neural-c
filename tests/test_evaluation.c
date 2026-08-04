@@ -30,7 +30,8 @@ static void test_multiclass_metrics(void)
     NeuralEvaluationResult result = {0};
     NeuralError error;
 
-    check(neural_evaluation_compute(NEURAL_LOSS_MSE,
+    check(neural_evaluation_compute(
+                                    NEURAL_LOSS_CATEGORICAL_CROSS_ENTROPY,
                                     NEURAL_ACTIVATION_SOFTMAX,
                                     predicted,
                                     expected,
@@ -69,7 +70,7 @@ static void test_binary_and_regression_detection(void)
     NeuralEvaluationResult result = {0};
     NeuralError error;
 
-    check(neural_evaluation_compute(NEURAL_LOSS_MSE,
+    check(neural_evaluation_compute(NEURAL_LOSS_BINARY_CROSS_ENTROPY,
                                     NEURAL_ACTIVATION_SIGMOID,
                                     binary_predicted,
                                     binary_expected,

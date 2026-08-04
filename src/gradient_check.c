@@ -61,12 +61,18 @@ static int evaluate_loss(GradientCheckContext *context,
                                 context->outputs,
                                 context->expected_count,
                                 error) &&
-           neural_loss_evaluate(context->loss,
-                                context->outputs,
-                                context->expected,
-                                context->expected_count,
-                                value,
-                                error);
+           neural_loss_evaluate_with_logits(
+               context->loss,
+               neural_model_output_activation(context->model),
+               neural_workspace_layer_pre_activations(
+                   context->workspace,
+                   neural_model_layer_count(context->model) - 1U,
+                   NULL),
+               context->outputs,
+               context->expected,
+               context->expected_count,
+               value,
+               error);
 }
 
 static int install_layer(GradientCheckContext *context,

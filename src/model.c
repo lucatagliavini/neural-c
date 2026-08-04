@@ -170,6 +170,14 @@ size_t neural_model_output_count(const NeuralModel *model)
     return model->layers[model->layer_count - 1U].neuron_count;
 }
 
+NeuralActivationKind neural_model_output_activation(const NeuralModel *model)
+{
+    if (model == NULL || model->layer_count == 0U) {
+        return NEURAL_ACTIVATION_LINEAR;
+    }
+    return model->layers[model->layer_count - 1U].activation.kind;
+}
+
 size_t neural_model_layer_count(const NeuralModel *model)
 {
     return model == NULL ? 0U : model->layer_count;

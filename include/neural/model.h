@@ -19,6 +19,7 @@ void neural_model_free(NeuralModel *model);
 
 size_t neural_model_input_count(const NeuralModel *model);
 size_t neural_model_output_count(const NeuralModel *model);
+NeuralActivationKind neural_model_output_activation(const NeuralModel *model);
 size_t neural_model_layer_count(const NeuralModel *model);
 size_t neural_model_parameter_count(const NeuralModel *model);
 size_t neural_model_layer_input_count(const NeuralModel *model,

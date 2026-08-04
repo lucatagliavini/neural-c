@@ -10,7 +10,9 @@
 #include "neural/types.h"
 
 typedef enum {
-    NEURAL_LOSS_MSE
+    NEURAL_LOSS_MSE,
+    NEURAL_LOSS_BINARY_CROSS_ENTROPY,
+    NEURAL_LOSS_CATEGORICAL_CROSS_ENTROPY
 } NeuralLoss;
 
 typedef struct {

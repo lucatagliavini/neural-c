@@ -200,6 +200,71 @@ static void test_multilayer_gradient_check(void)
     neural_model_free(model);
 }
 
+static void test_cross_entropy_gradient_checks(void)
+{
+    NeuralLayerSpec binary_layer = {
+        1U, {NEURAL_ACTIVATION_SIGMOID, 0U, NULL}
+    };
+    NeuralLayerSpec categorical_layer = {
+        3U, {NEURAL_ACTIVATION_SOFTMAX, 0U, NULL}
+    };
+    NeuralModelSpec binary_spec = {2U, 1U, &binary_layer};
+    NeuralModelSpec categorical_spec = {2U, 1U, &categorical_layer};
+    const neural_real binary_inputs[] = {0.4, -0.7};
+    const neural_real binary_target[] = {1.0};
+    const neural_real categorical_inputs[] = {-0.2, 0.9};
+    const neural_real categorical_target[] = {0.0, 1.0, 0.0};
+    NeuralModel *binary_model = NULL;
+    NeuralModel *categorical_model = NULL;
+    NeuralWorkspace *binary_workspace = NULL;
+    NeuralWorkspace *categorical_workspace = NULL;
+    NeuralGradientCheckResult result;
+    NeuralError error;
+    int prepared;
+
+    prepared = neural_model_create(&binary_spec, UINT64_C(21),
+                                   &binary_model, &error) &&
+               neural_workspace_create(binary_model,
+                                       &binary_workspace,
+                                       &error) &&
+               neural_model_create(&categorical_spec, UINT64_C(22),
+                                   &categorical_model, &error) &&
+               neural_workspace_create(categorical_model,
+                                       &categorical_workspace,
+                                       &error);
+    check(prepared, "cross-entropy gradient-check fixtures must be prepared");
+    if (prepared) {
+        check(neural_model_gradient_check(
+                  binary_model,
+                  binary_workspace,
+                  NEURAL_LOSS_BINARY_CROSS_ENTROPY,
+                  binary_inputs,
+                  2U,
+                  binary_target,
+                  1U,
+                  NULL,
+                  &result,
+                  &error) && result.passed,
+              "sigmoid binary cross-entropy gradient check must pass");
+        check(neural_model_gradient_check(
+                  categorical_model,
+                  categorical_workspace,
+                  NEURAL_LOSS_CATEGORICAL_CROSS_ENTROPY,
+                  categorical_inputs,
+                  2U,
+                  categorical_target,
+                  3U,
+                  NULL,
+                  &result,
+                  &error) && result.passed,
+              "softmax categorical cross-entropy gradient check must pass");
+    }
+    neural_workspace_free(categorical_workspace);
+    neural_model_free(categorical_model);
+    neural_workspace_free(binary_workspace);
+    neural_model_free(binary_model);
+}
+
 static void test_nondifferentiable_mismatch(void)
 {
     NeuralLayerSpec layer = {
@@ -325,6 +390,7 @@ int main(void)
 {
     test_all_activation_kinds();
     test_multilayer_gradient_check();
+    test_cross_entropy_gradient_checks();
     test_nondifferentiable_mismatch();
     test_invalid_arguments();
 

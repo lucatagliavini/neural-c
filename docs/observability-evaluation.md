@@ -52,6 +52,10 @@ accuracy, a truth-major confusion matrix, and per-class precision, recall, and
 F1; zero denominators produce zero. Other targets are reported as regression
 without inferred classification metrics.
 
+Configured cross-entropy loss is evaluated from model logits using the stable
+definitions in `losses.md`; classification metrics continue to use the
+materialized sigmoid or softmax predictions.
+
 ## Early Stopping
 
 `early_stopping_patience` and `early_stopping_min_delta` are project settings.

@@ -332,9 +332,11 @@ compare_prediction_documents \
 
 printf 'Cross-runtime: comparing independently apportioned splits\n'
 run_native init "$native_split_dir" --inputs 4 --layer 3:softmax \
-    --epochs 2 --checkpoint-interval 0 >/dev/null
+    --epochs 2 --loss categorical_cross_entropy \
+    --checkpoint-interval 0 >/dev/null
 run_ppc64le init "$ppc64le_split_dir" --inputs 4 --layer 3:softmax \
-    --epochs 2 --checkpoint-interval 0 >/dev/null
+    --epochs 2 --loss categorical_cross_entropy \
+    --checkpoint-interval 0 >/dev/null
 run_native import-csv "$native_split_dir" \
     tests/fixtures/iris-small-split.csv \
     --schema tests/fixtures/iris-schema.txt --validation-ratio 0.2 \
@@ -350,5 +352,29 @@ cmp "$native_split_dir/validation.txt" "$ppc64le_split_dir/validation.txt"
 cmp "$native_split_dir/test.txt" "$ppc64le_split_dir/test.txt"
 cmp "$native_split_dir/preprocessing.txt" \
     "$ppc64le_split_dir/preprocessing.txt"
+run_native train "$native_split_dir" --threads 3 >/dev/null
+run_ppc64le train "$ppc64le_split_dir" --threads 3 >/dev/null
+run_native predict "$native_split_dir" 5.1 3.5 1.4 0.2 \
+    >"$work_dir/native-split.predict"
+run_ppc64le predict "$ppc64le_split_dir" 5.1 3.5 1.4 0.2 \
+    >"$work_dir/ppc64le-split.predict"
+compare_prediction_documents "$work_dir/native-split.predict" \
+    "$work_dir/ppc64le-split.predict"
+run_ppc64le predict "$native_split_dir" 5.1 3.5 1.4 0.2 \
+    >"$work_dir/native-split.ppc64le-predict"
+run_native predict "$ppc64le_split_dir" 5.1 3.5 1.4 0.2 \
+    >"$work_dir/ppc64le-split.native-predict"
+compare_prediction_documents "$work_dir/native-split.predict" \
+    "$work_dir/native-split.ppc64le-predict"
+compare_prediction_documents "$work_dir/ppc64le-split.predict" \
+    "$work_dir/ppc64le-split.native-predict"
+run_native inspect "$native_split_dir" >"$work_dir/native-split.inspect"
+run_ppc64le inspect "$ppc64le_split_dir" \
+    >"$work_dir/ppc64le-split.inspect"
+native_split_training_digest=$(awk '/^Training digest:/ { print $3 }' \
+    "$work_dir/native-split.inspect")
+ppc64le_split_training_digest=$(awk '/^Training digest:/ { print $3 }' \
+    "$work_dir/ppc64le-split.inspect")
+[[ $native_split_training_digest == "$ppc64le_split_training_digest" ]]
 
 printf 'All cross-runtime tests passed\n'

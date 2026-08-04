@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "neural/defaults.h"
+#include "neural/loss.h"
 #include "neural/version.h"
 #include "path.h"
 #include "project_lock.h"
@@ -303,7 +304,12 @@ int neural_project_initialize(const char *directory,
         return 0;
     }
     if (!neural_model_spec_validate(model, error) ||
-        !neural_training_config_validate(training, error)) {
+        !neural_training_config_validate(training, error) ||
+        !neural_loss_validate_output(
+            training->loss,
+            model->layers[model->layer_count - 1U].activation.kind,
+            model->layers[model->layer_count - 1U].neuron_count,
+            error)) {
         return 0;
     }
 
