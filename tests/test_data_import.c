@@ -95,6 +95,9 @@ static void test_import_split_and_preprocessing(void)
     check(neural_project_load(directory, &project, &error) &&
               project.dataset.sample_count == 12U &&
               project.has_preprocessing &&
+              project.preprocessing.format_version == 2U &&
+              project.preprocessing.split_algorithm ==
+                  NEURAL_SPLIT_GLOBAL_LARGEST_REMAINDER_V1 &&
               project.preprocessing.missing_policy == NEURAL_MISSING_MEAN &&
               project.preprocessing.normalization ==
                   NEURAL_NORMALIZATION_STANDARDIZE,
@@ -111,6 +114,173 @@ static void test_import_split_and_preprocessing(void)
               missing[2] == 0.0 && missing[3] == 0.0,
           "mean imputation must be persisted and reused before normalization");
     neural_dataset_free(&test);
+    neural_project_free(&project);
+    cleanup(directory);
+}
+
+static void test_small_global_stratified_split(void)
+{
+    const char *directory = "build/tests/data-import-small-split";
+    NeuralDataImportConfig config = {
+        "tests/fixtures/iris-schema.txt", 0.2, 0.2, 17U,
+        NEURAL_NORMALIZATION_NONE, NEURAL_MISSING_REJECT
+    };
+    NeuralDataImportResult first;
+    NeuralDataImportResult second;
+    NeuralDataset validation = {0};
+    NeuralDataset test = {0};
+    NeuralError error;
+    char validation_path[256];
+    char test_path[256];
+    char first_validation[2048];
+    FILE *stream;
+    size_t bytes;
+
+    check(prepare(directory), "small split project must be prepared");
+    check(neural_data_import_csv(directory,
+                                 "tests/fixtures/iris-small-split.csv",
+                                 &config,
+                                 &first,
+                                 &error) &&
+              first.total_samples == 12U &&
+              first.training_samples == 8U &&
+              first.validation_samples == 2U &&
+              first.test_samples == 2U,
+          "global quotas must represent small stratified datasets");
+    (void)snprintf(validation_path, sizeof(validation_path),
+                   "%s/validation.txt", directory);
+    (void)snprintf(test_path, sizeof(test_path), "%s/test.txt", directory);
+    check(neural_dataset_load(validation_path, 4U, 3U, &validation, &error) &&
+              validation.sample_count == 2U &&
+              neural_dataset_load(test_path, 4U, 3U, &test, &error) &&
+              test.sample_count == 2U,
+          "small split subsets must remain valid native datasets");
+    stream = fopen(validation_path, "rb");
+    bytes = stream == NULL ? 0U :
+        fread(first_validation, 1U, sizeof(first_validation), stream);
+    if (stream != NULL) (void)fclose(stream);
+    check(bytes != 0U && bytes < sizeof(first_validation),
+          "small validation split must be readable for determinism check");
+    check(neural_data_import_csv(directory,
+                                 "tests/fixtures/iris-small-split.csv",
+                                 &config,
+                                 &second,
+                                 &error) &&
+              memcmp(&first, &second, sizeof(first)) == 0,
+          "repeated split metadata must be deterministic");
+    stream = fopen(validation_path, "rb");
+    if (stream != NULL) {
+        char repeated[2048];
+        size_t repeated_bytes = fread(repeated, 1U, sizeof(repeated), stream);
+
+        check(repeated_bytes == bytes &&
+                  memcmp(repeated, first_validation, bytes) == 0,
+              "repeated stratified assignment must be byte-identical");
+        (void)fclose(stream);
+    } else {
+        check(0, "repeated validation split must be readable");
+    }
+    neural_dataset_free(&test);
+    neural_dataset_free(&validation);
+    cleanup(directory);
+}
+
+static void test_preprocessing_v1_compatibility(void)
+{
+    const char *path = "build/tests/preprocessing-v1.txt";
+    NeuralPreprocessing preprocessing = {0};
+    NeuralError error;
+    FILE *stream;
+    char header[128] = "";
+
+    check(write_text(path,
+        "neural-c preprocessing 1\n"
+        "inputs 1\nnormalization none\nmissing reject\n"
+        "source_digest sha256:0000000000000000000000000000000000000000000000000000000000000000\n"
+        "schema_digest sha256:1111111111111111111111111111111111111111111111111111111111111111\n"
+        "split_seed 1\nvalidation_ratio 0\ntest_ratio 0\n"
+        "stratified no\nfeature 0 offset 0 scale 1 impute 0\nend\n") &&
+              neural_preprocessing_load(path, &preprocessing, &error) &&
+              preprocessing.format_version == 1U &&
+              preprocessing.split_algorithm ==
+                  NEURAL_SPLIT_PER_CLASS_FLOOR_V1,
+          "preprocessing version 1 must retain legacy split semantics");
+    check(neural_preprocessing_save_atomic(path, &preprocessing, &error),
+          "preprocessing version 1 must remain writable");
+    stream = fopen(path, "r");
+    if (stream != NULL) {
+        if (fgets(header, sizeof(header), stream) == NULL) {
+            header[0] = '\0';
+        }
+        (void)fclose(stream);
+    }
+    check(strcmp(header, "neural-c preprocessing 1\n") == 0,
+          "version 1 preprocessing round trip must retain its header");
+    neural_preprocessing_free(&preprocessing);
+    check(write_text(path,
+        "neural-c preprocessing 2\n"
+        "inputs 1\nnormalization none\nmissing reject\n"
+        "source_digest sha256:0000000000000000000000000000000000000000000000000000000000000000\n"
+        "schema_digest sha256:1111111111111111111111111111111111111111111111111111111111111111\n"
+        "split_seed 1\nvalidation_ratio 0\ntest_ratio 0\n"
+        "stratified no\nsplit_algorithm unknown\n"
+        "feature 0 offset 0 scale 1 impute 0\nend\n") &&
+              !neural_preprocessing_load(path, &preprocessing, &error) &&
+              strstr(error.message, "split algorithm") != NULL,
+          "version 2 preprocessing must reject unknown split algorithms");
+    (void)remove(path);
+}
+
+static void test_imbalanced_split_training_reserve(void)
+{
+    const char *directory = "build/tests/data-import-imbalanced";
+    NeuralDataImportConfig config = {
+        "tests/fixtures/iris-schema.txt", 0.4, 0.3, 23U,
+        NEURAL_NORMALIZATION_MINMAX, NEURAL_MISSING_REJECT
+    };
+    NeuralDataImportResult result;
+    NeuralProject project = {0};
+    NeuralError error;
+    size_t class_counts[3] = {0U, 0U, 0U};
+    size_t sample;
+
+    check(prepare(directory), "imbalanced split project must be prepared");
+    check(neural_data_import_csv(directory,
+                                 "tests/fixtures/iris-imbalanced-split.csv",
+                                 &config,
+                                 &result,
+                                 &error) &&
+              result.training_samples == 5U &&
+              result.validation_samples == 4U &&
+              result.test_samples == 3U,
+          "imbalanced split must meet exact global subset counts");
+    check(neural_project_load(directory, &project, &error),
+          "imbalanced imported project must reload");
+    for (sample = 0U; sample < project.dataset.sample_count; sample++) {
+        size_t output;
+
+        for (output = 0U; output < 3U; output++) {
+            if (project.dataset.outputs[sample * 3U + output] == 1.0) {
+                class_counts[output]++;
+            }
+        }
+    }
+    check(class_counts[0] >= 1U && class_counts[1] >= 1U &&
+              class_counts[2] >= 1U,
+          "imbalanced split must reserve training data for every class");
+    neural_project_free(&project);
+    config.validation_ratio = 0.5;
+    config.test_ratio = 0.4;
+    check(!neural_data_import_csv(directory,
+                                  "tests/fixtures/iris-imbalanced-split.csv",
+                                  &config,
+                                  &result,
+                                  &error) &&
+              strstr(error.message, "one training sample per class") != NULL,
+          "infeasible holdout quotas must fail instead of dropping a class");
+    check(neural_project_load(directory, &project, &error) &&
+              project.dataset.sample_count == 5U,
+          "failed infeasible split must preserve the prior imported project");
     neural_project_free(&project);
     cleanup(directory);
 }
@@ -180,6 +350,9 @@ static void test_transaction_rollback(void)
 int main(void)
 {
     test_import_split_and_preprocessing();
+    test_small_global_stratified_split();
+    test_preprocessing_v1_compatibility();
+    test_imbalanced_split_training_reserve();
     test_reject_and_weights_guard();
     test_transaction_rollback();
     if (failures != 0) {

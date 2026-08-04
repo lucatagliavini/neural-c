@@ -547,9 +547,11 @@ import_output=$(
 )
 grep -q '^CSV import complete: 18 samples, train 12, validation 3, test 3, stratified yes$' \
     <<<"$import_output"
-grep -q '^neural-c preprocessing 1$' "$import_dir/preprocessing.txt"
+grep -q '^neural-c preprocessing 2$' "$import_dir/preprocessing.txt"
 grep -q '^normalization standardize$' "$import_dir/preprocessing.txt"
 grep -q '^missing mean$' "$import_dir/preprocessing.txt"
+grep -q '^split_algorithm global_largest_remainder_v1$' \
+    "$import_dir/preprocessing.txt"
 [[ $(grep -c ' -> ' "$import_dir/train.txt") -eq 12 ]]
 [[ $(grep -c ' -> ' "$import_dir/validation.txt") -eq 3 ]]
 [[ $(grep -c ' -> ' "$import_dir/test.txt") -eq 3 ]]

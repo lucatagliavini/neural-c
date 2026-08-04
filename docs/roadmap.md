@@ -83,6 +83,11 @@
     prediction inputs.
   - **8.4 — complete:** add deterministic train/validation/test splitting, including
     stratification for categorical targets and reproducible split provenance.
+  - **8.4.1 — complete:** replace per-class floor sizing for new imports with
+    exact global subset counts and deterministic largest-remainder
+    apportionment, reserve training coverage per class, persist the split
+    algorithm in preprocessing version 2, and retain version 1 loading and
+    digest semantics.
   - **8.5 — complete:** define missing-value policy and reject, impute, or transform values
     only through explicit persisted configuration.
 - **Milestone 9 — losses and configurable gradient descent:**

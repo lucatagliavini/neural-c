@@ -59,13 +59,56 @@ identify the source row and fail before managed data is replaced.
 reproducible split; both ratios default to zero and their sum must be below one.
 Categorical imports shuffle each declared class independently with neural-c's
 specified SplitMix64 stream, which makes the split stratified. Numeric-target
-imports shuffle the complete dataset. Subset sizes use `floor(class_size *
-ratio)` for each categorical class or `floor(total_size * ratio)` otherwise.
-Requested nonzero subsets that cannot receive a sample fail actionably.
+imports shuffle the complete dataset.
+
+Version 2 preprocessing uses `global_largest_remainder_v1`. The exact global
+test count is `floor(total_size * test_ratio)` and the validation count is
+`floor(total_size * validation_ratio)`. A positive ratio whose global count is
+zero fails actionably. For categorical data, test quotas are apportioned first
+and validation quotas second. Each subset starts from
+`floor(class_size * global_subset_count / total_size)`; remaining places go to
+the largest fractional remainders. Equal remainders prefer the class with the
+smaller already assigned holdout, then schema class order. A class is capped so
+at least one of its samples remains in training. If caps require redistribution,
+the same deterministic order repeats until the exact global count is reached.
+The import fails without changes when the requested combined holdout cannot
+preserve one training sample for every declared class.
+
+Preprocessing version 1 remains readable and writable with its historical
+`per_class_floor_v1` semantics. New imports write version 2 and explicitly
+persist `split_algorithm global_largest_remainder_v1`. Version 1 metadata and
+its canonical digest are not migrated implicitly; existing projects and
+weights therefore remain compatible.
+
+The version 2 metadata order is strict:
+
+```text
+neural-c preprocessing 2
+inputs 4
+normalization standardize
+missing mean
+source_digest sha256:<64 lowercase hexadecimal characters>
+schema_digest sha256:<64 lowercase hexadecimal characters>
+split_seed 42
+validation_ratio 0.20000000000000001
+test_ratio 0.20000000000000001
+stratified yes
+split_algorithm global_largest_remainder_v1
+feature 0 offset 5.8 scale 0.8 impute 5.8
+feature 1 offset 3.1 scale 0.4 impute 3.1
+feature 2 offset 3.7 scale 1.7 impute 3.7
+feature 3 offset 1.2 scale 0.7 impute 1.2
+end
+```
+
+There is exactly one contiguous zero-based `feature` line per input. Version 1
+has the same field order but omits `split_algorithm`; its algorithm is
+implicitly `per_class_floor_v1`.
 
 Rows within each generated native dataset retain source order after assignment.
-The CSV and schema SHA-256 digests, requested ratios, seed, and stratification
-flag are persisted in `preprocessing.txt`. `train.txt`, optional
+The CSV and schema SHA-256 digests, requested ratios, seed, stratification flag,
+format version, and split algorithm are persisted in `preprocessing.txt`.
+`train.txt`, optional
 `validation.txt`, optional `test.txt`, and `preprocessing.txt` are staged before
 replacement and installed as one rollback-capable project transaction.
 

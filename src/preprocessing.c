@@ -105,6 +105,33 @@ int neural_missing_policy_from_name(const char *name,
     return 1;
 }
 
+const char *neural_split_algorithm_name(NeuralSplitAlgorithm algorithm)
+{
+    switch (algorithm) {
+    case NEURAL_SPLIT_PER_CLASS_FLOOR_V1:
+        return "per_class_floor_v1";
+    case NEURAL_SPLIT_GLOBAL_LARGEST_REMAINDER_V1:
+        return "global_largest_remainder_v1";
+    }
+    return "unknown";
+}
+
+int neural_split_algorithm_from_name(const char *name,
+                                     NeuralSplitAlgorithm *algorithm)
+{
+    if (name == NULL || algorithm == NULL) {
+        return 0;
+    }
+    if (strcmp(name, "per_class_floor_v1") == 0) {
+        *algorithm = NEURAL_SPLIT_PER_CLASS_FLOOR_V1;
+    } else if (strcmp(name, "global_largest_remainder_v1") == 0) {
+        *algorithm = NEURAL_SPLIT_GLOBAL_LARGEST_REMAINDER_V1;
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
 void neural_preprocessing_free(NeuralPreprocessing *preprocessing)
 {
     if (preprocessing != NULL) {
@@ -120,7 +147,10 @@ int neural_preprocessing_validate(const NeuralPreprocessing *preprocessing,
 {
     size_t index;
 
-    if (preprocessing == NULL || preprocessing->input_count == 0U ||
+    if (preprocessing == NULL ||
+        (preprocessing->format_version != 1U &&
+         preprocessing->format_version != 2U) ||
+        preprocessing->input_count == 0U ||
         preprocessing->offsets == NULL || preprocessing->scales == NULL ||
         preprocessing->imputations == NULL ||
         strcmp(neural_normalization_name(preprocessing->normalization),
@@ -128,6 +158,16 @@ int neural_preprocessing_validate(const NeuralPreprocessing *preprocessing,
         strcmp(neural_missing_policy_name(preprocessing->missing_policy),
                "unknown") == 0) {
         neural_error_set(error, "preprocessing metadata is incomplete");
+        return 0;
+    }
+    if ((preprocessing->format_version == 1U &&
+         preprocessing->split_algorithm !=
+             NEURAL_SPLIT_PER_CLASS_FLOOR_V1) ||
+        (preprocessing->format_version == 2U &&
+         preprocessing->split_algorithm !=
+             NEURAL_SPLIT_GLOBAL_LARGEST_REMAINDER_V1)) {
+        neural_error_set(error,
+                         "preprocessing split algorithm does not match format");
         return 0;
     }
     if (strlen(preprocessing->source_digest) != NEURAL_SHA256_HEX_LENGTH ||
@@ -387,16 +427,18 @@ int neural_preprocessing_load(const char *path,
     }
     if (!require(&reader, 3U, NEURAL_FORMAT_MAGIC, error) ||
         strcmp(reader.tokens[1], "preprocessing") != 0 ||
-        !neural_parse_size(reader.tokens[2], &version) || version != 1U) {
+        !neural_parse_size(reader.tokens[2], &version) ||
+        (version != 1U && version != 2U)) {
         if (error->message[0] == '\0') {
             neural_error_set(error,
-                             "%s:%zu: expected '%s preprocessing 1'",
+                             "%s:%zu: expected '%s preprocessing 1|2'",
                              path,
                              reader.line_number,
                              NEURAL_FORMAT_MAGIC);
         }
         goto cleanup;
     }
+    loaded.format_version = version;
     if (!require(&reader, 2U, "inputs", error) ||
         !neural_parse_size(reader.tokens[1], &loaded.input_count) ||
         loaded.input_count == 0U ||
@@ -450,6 +492,21 @@ int neural_preprocessing_load(const char *path,
         goto cleanup;
     }
     loaded.stratified = strcmp(reader.tokens[1], "yes") == 0;
+    if (version == 1U) {
+        loaded.split_algorithm = NEURAL_SPLIT_PER_CLASS_FLOOR_V1;
+    } else if (!require(&reader, 2U, "split_algorithm", error) ||
+               !neural_split_algorithm_from_name(
+                   reader.tokens[1], &loaded.split_algorithm) ||
+               loaded.split_algorithm !=
+                   NEURAL_SPLIT_GLOBAL_LARGEST_REMAINDER_V1) {
+        if (error->message[0] == '\0') {
+            neural_error_set(error,
+                             "%s:%zu: invalid split algorithm",
+                             path,
+                             reader.line_number);
+        }
+        goto cleanup;
+    }
     if (loaded.input_count > SIZE_MAX / sizeof(*loaded.offsets)) {
         neural_error_set(error, "preprocessing dimensions are too large");
         goto cleanup;
@@ -525,7 +582,7 @@ int neural_preprocessing_write(FILE *stream,
         return 0;
     }
     if (fprintf(stream,
-                "%s preprocessing 1\n"
+                "%s preprocessing %zu\n"
                 "inputs %zu\n"
                 "normalization %s\n"
                 "missing %s\n"
@@ -536,6 +593,7 @@ int neural_preprocessing_write(FILE *stream,
                 "test_ratio %.*g\n"
                 "stratified %s\n",
                 NEURAL_FORMAT_MAGIC,
+                preprocessing->format_version,
                 preprocessing->input_count,
                 neural_normalization_name(preprocessing->normalization),
                 neural_missing_policy_name(preprocessing->missing_policy),
@@ -547,6 +605,13 @@ int neural_preprocessing_write(FILE *stream,
                 DBL_DECIMAL_DIG,
                 preprocessing->test_ratio,
                 preprocessing->stratified ? "yes" : "no") < 0) {
+        goto cleanup;
+    }
+    if (preprocessing->format_version == 2U &&
+        fprintf(stream,
+                "split_algorithm %s\n",
+                neural_split_algorithm_name(
+                    preprocessing->split_algorithm)) < 0) {
         goto cleanup;
     }
     for (index = 0U; index < preprocessing->input_count; index++) {
@@ -640,7 +705,7 @@ int neural_preprocessing_digest(
     }
     neural_sha256_init(&context);
     update_text(&context, NEURAL_FORMAT_MAGIC ":canonical:preprocessing");
-    update_u64(&context, UINT64_C(1));
+    update_u64(&context, (uint64_t)preprocessing->format_version);
     update_u64(&context, (uint64_t)preprocessing->input_count);
     update_text(&context, neural_normalization_name(preprocessing->normalization));
     update_text(&context, neural_missing_policy_name(preprocessing->missing_policy));
@@ -650,6 +715,11 @@ int neural_preprocessing_digest(
     update_real(&context, preprocessing->validation_ratio);
     update_real(&context, preprocessing->test_ratio);
     update_u64(&context, (uint64_t)preprocessing->stratified);
+    if (preprocessing->format_version >= 2U) {
+        update_text(&context,
+                    neural_split_algorithm_name(
+                        preprocessing->split_algorithm));
+    }
     for (index = 0U; index < preprocessing->input_count; index++) {
         update_real(&context, preprocessing->offsets[index]);
         update_real(&context, preprocessing->scales[index]);

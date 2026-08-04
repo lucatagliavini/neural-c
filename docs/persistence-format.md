@@ -67,8 +67,11 @@ contains its patience/minimum delta and the canonical validation digest.
 Disabled early stopping preserves the version 1 training digest exactly.
 When `preprocessing.txt` is present, the dataset digest additionally binds its
 canonical transform, raw CSV/schema SHA-256 provenance, split seed, ratios, and
-stratification flag. Projects without preprocessing preserve the legacy
-dataset digest exactly. The format and fit rules are in `data-interfaces.md`.
+stratification flag. Preprocessing version 2 also binds the persisted split
+algorithm. Version 1 preprocessing retains its original canonical stream and
+digest exactly, while new imports write version 2. Projects without
+preprocessing preserve the legacy dataset digest exactly. The format and fit
+rules are in `data-interfaces.md`.
 Changing any owned value changes only its corresponding digest.
 
 ## Atomic Replacement

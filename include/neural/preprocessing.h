@@ -20,7 +20,13 @@ typedef enum {
     NEURAL_MISSING_MEAN
 } NeuralMissingPolicy;
 
+typedef enum {
+    NEURAL_SPLIT_PER_CLASS_FLOOR_V1,
+    NEURAL_SPLIT_GLOBAL_LARGEST_REMAINDER_V1
+} NeuralSplitAlgorithm;
+
 typedef struct {
+    size_t format_version;
     size_t input_count;
     NeuralNormalization normalization;
     NeuralMissingPolicy missing_policy;
@@ -33,6 +39,7 @@ typedef struct {
     neural_real validation_ratio;
     neural_real test_ratio;
     int stratified;
+    NeuralSplitAlgorithm split_algorithm;
 } NeuralPreprocessing;
 
 int neural_preprocessing_load(const char *path,
@@ -65,5 +72,8 @@ int neural_normalization_from_name(const char *name,
 const char *neural_missing_policy_name(NeuralMissingPolicy policy);
 int neural_missing_policy_from_name(const char *name,
                                     NeuralMissingPolicy *policy);
+const char *neural_split_algorithm_name(NeuralSplitAlgorithm algorithm);
+int neural_split_algorithm_from_name(const char *name,
+                                     NeuralSplitAlgorithm *algorithm);
 
 #endif

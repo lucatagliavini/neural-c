@@ -61,8 +61,10 @@ without column guessing:
     --normalization standardize --missing mean
 ```
 
-Categorical schemas produce a deterministic stratified split. Statistics and
-imputation values are learned from training rows only and reused by prediction.
+Categorical schemas produce a deterministic stratified split with exact global
+subset counts and at least one training sample per class when feasible.
+Statistics and imputation values are learned from training rows only and reused
+by prediction.
 
 ## Build and test
 

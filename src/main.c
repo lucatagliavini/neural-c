@@ -1566,6 +1566,8 @@ static int command_inspect(const char *directory, int include_state)
     }
     if (project.has_preprocessing) {
         printf("Preprocessing: present\n");
+        printf("Preprocessing format: %zu\n",
+               project.preprocessing.format_version);
         printf("Normalization: %s\n",
                neural_normalization_name(project.preprocessing.normalization));
         printf("Missing policy: %s\n",
@@ -1580,6 +1582,9 @@ static int command_inspect(const char *directory, int include_state)
                project.preprocessing.test_ratio);
         printf("Stratified split: %s\n",
                project.preprocessing.stratified ? "yes" : "no");
+        printf("Split algorithm: %s\n",
+               neural_split_algorithm_name(
+                   project.preprocessing.split_algorithm));
     } else {
         printf("Preprocessing: absent (identity)\n");
     }

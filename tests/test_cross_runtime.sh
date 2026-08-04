@@ -217,6 +217,8 @@ native_to_ppc64le_dir=$work_dir/native-to-ppc64le
 ppc64le_to_native_dir=$work_dir/ppc64le-to-native
 native_data_dir=$work_dir/native-data
 ppc64le_data_dir=$work_dir/ppc64le-data
+native_split_dir=$work_dir/native-split
+ppc64le_split_dir=$work_dir/ppc64le-split
 prepare_project "$native_dir"
 prepare_project "$ppc64le_dir"
 prepare_project "$native_to_ppc64le_dir"
@@ -327,5 +329,26 @@ run_native predict "$ppc64le_data_dir" 6.4 3.2 4.5 1.5 --threads 2 \
 compare_prediction_documents \
     "$work_dir/ppc64le-data.ppc64le-predict" \
     "$work_dir/ppc64le-data.native-predict"
+
+printf 'Cross-runtime: comparing independently apportioned splits\n'
+run_native init "$native_split_dir" --inputs 4 --layer 3:softmax \
+    --epochs 2 --checkpoint-interval 0 >/dev/null
+run_ppc64le init "$ppc64le_split_dir" --inputs 4 --layer 3:softmax \
+    --epochs 2 --checkpoint-interval 0 >/dev/null
+run_native import-csv "$native_split_dir" \
+    tests/fixtures/iris-small-split.csv \
+    --schema tests/fixtures/iris-schema.txt --validation-ratio 0.2 \
+    --test-ratio 0.2 --split-seed 17 --normalization none \
+    --missing reject >/dev/null
+run_ppc64le import-csv "$ppc64le_split_dir" \
+    tests/fixtures/iris-small-split.csv \
+    --schema tests/fixtures/iris-schema.txt --validation-ratio 0.2 \
+    --test-ratio 0.2 --split-seed 17 --normalization none \
+    --missing reject >/dev/null
+cmp "$native_split_dir/train.txt" "$ppc64le_split_dir/train.txt"
+cmp "$native_split_dir/validation.txt" "$ppc64le_split_dir/validation.txt"
+cmp "$native_split_dir/test.txt" "$ppc64le_split_dir/test.txt"
+cmp "$native_split_dir/preprocessing.txt" \
+    "$ppc64le_split_dir/preprocessing.txt"
 
 printf 'All cross-runtime tests passed\n'

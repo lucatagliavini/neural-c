@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <float.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <locale.h>
 #include <math.h>
 #include <stdint.h>
@@ -743,6 +744,129 @@ static size_t ratio_count(size_t count, neural_real ratio)
     return (size_t)floor((neural_real)count * ratio);
 }
 
+static void multiply_divide_size(size_t multiplicand,
+                                 size_t multiplier,
+                                 size_t divisor,
+                                 size_t *quotient,
+                                 size_t *remainder)
+{
+    size_t result = 0U;
+    size_t residual = 0U;
+    size_t bit = (size_t)1U << (sizeof(size_t) * CHAR_BIT - 1U);
+
+    if (multiplicand == divisor) {
+        *quotient = multiplier;
+        *remainder = 0U;
+        return;
+    }
+    while (bit != 0U) {
+        result *= 2U;
+        if (residual >= divisor - residual) {
+            residual -= divisor - residual;
+            result++;
+        } else {
+            residual *= 2U;
+        }
+        if ((multiplier & bit) != 0U) {
+            if (residual >= divisor - multiplicand) {
+                residual -= divisor - multiplicand;
+                result++;
+            } else {
+                residual += multiplicand;
+            }
+        }
+        bit >>= 1U;
+    }
+    *quotient = result;
+    *remainder = residual;
+}
+
+static int allocate_stratified_counts(const size_t *group_sizes,
+                                      const size_t *reserved,
+                                      size_t group_count,
+                                      size_t total_count,
+                                      size_t target_count,
+                                      size_t *counts,
+                                      NeuralError *error)
+{
+    size_t *remainders = NULL;
+    unsigned char *used = NULL;
+    size_t allocated = 0U;
+    size_t group;
+    int success = 0;
+
+    remainders = calloc(group_count, sizeof(*remainders));
+    used = calloc(group_count, sizeof(*used));
+    if (remainders == NULL || used == NULL) {
+        neural_error_set(error, "unable to allocate stratified quotas");
+        goto cleanup;
+    }
+    for (group = 0U; group < group_count; group++) {
+        size_t capacity = group_sizes[group] - 1U - reserved[group];
+
+        multiply_divide_size(group_sizes[group],
+                             target_count,
+                             total_count,
+                             &counts[group],
+                             &remainders[group]);
+        if (counts[group] > capacity) {
+            counts[group] = capacity;
+        }
+        if (allocated > target_count - counts[group]) {
+            neural_error_set(error, "stratified quota arithmetic overflow");
+            goto cleanup;
+        }
+        allocated += counts[group];
+    }
+    while (allocated < target_count) {
+        size_t selected = SIZE_MAX;
+
+        for (group = 0U; group < group_count; group++) {
+            size_t capacity = group_sizes[group] - 1U - reserved[group];
+
+            if (used[group] || counts[group] >= capacity) {
+                continue;
+            }
+            if (selected == SIZE_MAX ||
+                remainders[group] > remainders[selected] ||
+                (remainders[group] == remainders[selected] &&
+                 reserved[group] + counts[group] <
+                     reserved[selected] + counts[selected])) {
+                selected = group;
+            }
+        }
+        if (selected == SIZE_MAX) {
+            int has_capacity = 0;
+
+            memset(used, 0, group_count * sizeof(*used));
+            for (group = 0U; group < group_count; group++) {
+                size_t capacity = group_sizes[group] - 1U - reserved[group];
+
+                if (counts[group] < capacity) {
+                    has_capacity = 1;
+                    break;
+                }
+            }
+            if (!has_capacity) {
+                neural_error_set(error,
+                                 "stratified split cannot preserve one training "
+                                 "sample per class");
+                goto cleanup;
+            }
+            continue;
+        }
+        counts[selected]++;
+        used[selected] = 1U;
+        allocated++;
+    }
+    success = 1;
+
+cleanup:
+    free(used);
+    free(remainders);
+    return success;
+}
+
 static int create_split(const ImportedRows *rows,
                         const CsvSchema *schema,
                         const NeuralDataImportConfig *config,
@@ -751,37 +875,86 @@ static int create_split(const ImportedRows *rows,
                         NeuralError *error)
 {
     unsigned char *assignment = calloc(rows->sample_count, 1U);
+    size_t *group_sizes = NULL;
+    size_t *test_counts = NULL;
+    size_t *validation_counts = NULL;
+    size_t *unreserved = NULL;
     NeuralRandom random;
     size_t group_count = schema->categorical ? schema->class_count : 1U;
+    size_t test_target = ratio_count(rows->sample_count, config->test_ratio);
+    size_t validation_target =
+        ratio_count(rows->sample_count, config->validation_ratio);
     size_t group;
+    int success = 0;
 
     if (assignment == NULL) {
         neural_error_set(error, "unable to allocate split assignments");
         return 0;
     }
+    if ((config->test_ratio > 0.0 && test_target == 0U) ||
+        (config->validation_ratio > 0.0 && validation_target == 0U)) {
+        neural_error_set(error,
+                         "requested split cannot be represented by %zu samples",
+                         rows->sample_count);
+        goto cleanup;
+    }
+    if (group_count > rows->sample_count ||
+        test_target > rows->sample_count - group_count ||
+        validation_target >
+            rows->sample_count - group_count - test_target) {
+        neural_error_set(error,
+                         "stratified split cannot preserve one training sample "
+                         "per class");
+        goto cleanup;
+    }
+    group_sizes = calloc(group_count, sizeof(*group_sizes));
+    test_counts = calloc(group_count, sizeof(*test_counts));
+    validation_counts = calloc(group_count, sizeof(*validation_counts));
+    unreserved = calloc(group_count, sizeof(*unreserved));
+    if (group_sizes == NULL || test_counts == NULL ||
+        validation_counts == NULL || unreserved == NULL) {
+        neural_error_set(error, "unable to allocate stratified split metadata");
+        goto cleanup;
+    }
+    for (group = 0U; group < rows->sample_count; group++) {
+        size_t class_index = schema->categorical ? rows->classes[group] : 0U;
+
+        group_sizes[class_index]++;
+    }
+    for (group = 0U; group < group_count; group++) {
+        if (group_sizes[group] == 0U) {
+            neural_error_set(error,
+                             "categorical class %zu has no CSV rows",
+                             group);
+            goto cleanup;
+        }
+    }
+    if (!allocate_stratified_counts(group_sizes,
+                                    unreserved,
+                                    group_count,
+                                    rows->sample_count,
+                                    test_target,
+                                    test_counts,
+                                    error) ||
+        !allocate_stratified_counts(group_sizes,
+                                    test_counts,
+                                    group_count,
+                                    rows->sample_count,
+                                    validation_target,
+                                    validation_counts,
+                                    error)) {
+        goto cleanup;
+    }
     neural_random_init(&random, config->split_seed);
     for (group = 0U; group < group_count; group++) {
-        size_t count = 0U;
+        size_t count = group_sizes[group];
         size_t *indices;
         size_t index;
-        size_t test_count;
-        size_t validation_count;
 
-        for (index = 0U; index < rows->sample_count; index++) {
-            if (!schema->categorical || rows->classes[index] == group) {
-                count++;
-            }
-        }
-        if (count == 0U) {
-            neural_error_set(error, "categorical class %zu has no CSV rows", group);
-            free(assignment);
-            return 0;
-        }
         indices = malloc(count * sizeof(*indices));
         if (indices == NULL) {
             neural_error_set(error, "unable to allocate split order");
-            free(assignment);
-            return 0;
+            goto cleanup;
         }
         count = 0U;
         for (index = 0U; index < rows->sample_count; index++) {
@@ -790,19 +963,10 @@ static int create_split(const ImportedRows *rows,
             }
         }
         shuffle_indices(indices, count, &random);
-        test_count = ratio_count(count, config->test_ratio);
-        validation_count = ratio_count(count, config->validation_ratio);
-        if (test_count + validation_count >= count) {
-            neural_error_set(error, "split leaves no training samples in group %zu",
-                             group);
-            free(indices);
-            free(assignment);
-            return 0;
-        }
-        for (index = 0U; index < test_count; index++) {
+        for (index = 0U; index < test_counts[group]; index++) {
             assignment[indices[index]] = SPLIT_TEST;
         }
-        for (; index < test_count + validation_count; index++) {
+        for (; index < test_counts[group] + validation_counts[group]; index++) {
             assignment[indices[index]] = SPLIT_VALIDATION;
         }
         free(indices);
@@ -820,16 +984,22 @@ static int create_split(const ImportedRows *rows,
         }
     }
     if (result->training_samples == 0U ||
-        (config->test_ratio > 0.0 && result->test_samples == 0U) ||
-        (config->validation_ratio > 0.0 && result->validation_samples == 0U)) {
-        neural_error_set(error,
-                         "requested split cannot be represented by %zu samples",
-                         rows->sample_count);
-        free(assignment);
-        return 0;
+        result->test_samples != test_target ||
+        result->validation_samples != validation_target) {
+        neural_error_set(error, "stratified split result is inconsistent");
+        goto cleanup;
     }
     *assignment_output = assignment;
-    return 1;
+    assignment = NULL;
+    success = 1;
+
+cleanup:
+    free(unreserved);
+    free(validation_counts);
+    free(test_counts);
+    free(group_sizes);
+    free(assignment);
+    return success;
 }
 
 static int fit_preprocessing(ImportedRows *rows,
@@ -1312,10 +1482,13 @@ int neural_data_import_csv(const char *project_directory,
                          "project early stopping requires a non-empty validation split");
         goto cleanup;
     }
+    preprocessing.format_version = 2U;
     preprocessing.split_seed = config->split_seed;
     preprocessing.validation_ratio = config->validation_ratio;
     preprocessing.test_ratio = config->test_ratio;
     preprocessing.stratified = schema.categorical;
+    preprocessing.split_algorithm =
+        NEURAL_SPLIT_GLOBAL_LARGEST_REMAINDER_V1;
     if (!fit_preprocessing(&rows, assignment, config, &preprocessing, error) ||
         !neural_preprocessing_validate(&preprocessing, error)) {
         goto cleanup;
