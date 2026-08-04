@@ -76,17 +76,64 @@ returns an executor-owned mean gradient valid until the next batch call. A
 failed wave contributes no gradients; a later batch call resets the
 accumulator and may safely reuse the pool.
 
-## Loss and Completion
+## Epoch Observation and Checkpointing
 
 Epoch reporting evaluates the complete dataset after all updates in that epoch,
 using a trainer-owned reusable workspace and output buffer. One reported value
 therefore always describes one coherent model state. An optional observer is
-called once per completed epoch and cannot request early success; rejecting a
-report fails the run.
+called synchronously by the coordinator once per completed epoch, after the
+model update and coherent loss evaluation. No worker task is active during the
+call, so the observer may read the model but must not modify it. The report's
+`completed_epochs` value and the model parameters describe the same epoch
+boundary. The observer and its context are borrowed for the duration of the
+training call.
+
+The trainer does not interpret `checkpoint_interval` and performs no file I/O.
+Fresh project training installs a project-layer observer that writes
+`checkpoint.txt` at each positive completed-epoch multiple of the configured
+interval. An interval of zero disables periodic saves; the observer still
+validates epoch reports but performs no persistence work unless a graceful
+stop was requested. A report outside an interval boundary likewise performs
+no persistence work unless it is the first coherent boundary after a stop
+request.
+Rejecting any report, including because checkpoint serialization or atomic
+replacement failed, fails the run immediately. The failed epoch remains
+applied only to the in-memory model; no final weights are produced.
+
+During `train`, the process installs minimal `SIGINT` and `SIGTERM` handlers.
+The handler preserves the first signal number in a `volatile sig_atomic_t` and
+does no allocation, locking, logging, or file I/O. At the next completed epoch
+boundary, the project observer writes one atomic recovery checkpoint and then
+rejects the report to stop training. A successfully checkpointed `SIGINT`
+returns status 130 and `SIGTERM` returns status 143. If the emergency save
+fails, training reports the persistence error and returns the ordinary runtime
+failure status instead of claiming a recoverable interruption.
+
+## Completion
 
 Fresh training runs exactly the configured number of epochs, with one full
 batch and one model update per epoch. It is allowed only when neither
 `weights.txt` nor `checkpoint.txt` exists. The final model and canonical
 project digests are written atomically to `weights.txt` only after every epoch
-and report succeeds. Training failures create no final weights. Checkpoints,
-signals, resume, and refinement are Milestone 5 responsibilities.
+and report succeeds. Successful finalization installs `weights.txt` before
+durably removing `checkpoint.txt`; a failure before the weights rename leaves
+the latest successfully installed checkpoint available. If finalization is
+interrupted after the weights rename, both valid files may remain for the
+resume transition to reconcile. Refinement is a later Milestone 5
+responsibility.
+
+## Absolute Epoch Ranges
+
+Continuation drives the same trainer with an absolute half-open epoch range.
+The input boundary is the number of epochs already completed; the target is the
+total completed-epoch count required by the run. Reports continue with
+`completed_epochs + 1` and therefore retain the same absolute numbering used by
+checkpoint metadata and periodic persistence. The range is invalid when the
+target is zero or the completed boundary exceeds it.
+
+When both boundaries are equal, the trainer performs no parameter update and
+emits no epoch report. It still evaluates the complete dataset once so the
+returned final loss describes the already completed model, and it resolves the
+effective worker count normally. Fresh training is the range from zero to the
+configured epoch count. Resume is the range from the validated checkpoint
+boundary to its validated target.

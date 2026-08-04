@@ -14,7 +14,7 @@ CPPFLAGS += -Iinclude
 CFLAGS += -std=c11 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow $(THREAD_FLAGS)
 LDLIBS += -lm
 
-LIBRARY_SOURCES := src/activation.c src/atomic_file.c src/backprop.c src/batch.c src/cli_options.c src/compensated_sum.c src/dense.c src/digest.c src/error.c src/executor.c src/gradient.c src/gradient_check.c src/init.c src/loss.c src/model.c src/parallel.c src/parse.c src/path.c src/persistence.c src/project.c src/random.c src/sha256.c src/tensor_ops.c src/train_project.c src/training.c src/version.c
+LIBRARY_SOURCES := src/activation.c src/atomic_file.c src/backprop.c src/batch.c src/cli_options.c src/compensated_sum.c src/dense.c src/digest.c src/error.c src/executor.c src/gradient.c src/gradient_check.c src/init.c src/loss.c src/model.c src/parallel.c src/parse.c src/path.c src/persistence.c src/project.c src/project_checkpoint.c src/project_lock.c src/random.c src/sha256.c src/tensor_ops.c src/train_project.c src/training.c src/version.c
 PROGRAM_SOURCES := src/main.c $(LIBRARY_SOURCES)
 PUBLIC_HEADERS := $(wildcard include/neural/*.h)
 INTERNAL_HEADERS := $(wildcard src/*.h)
@@ -27,6 +27,9 @@ BACKPROP_TEST_SOURCES := tests/test_backprop.c $(LIBRARY_SOURCES)
 GRADIENT_CHECK_TEST_SOURCES := tests/test_gradient_check.c $(LIBRARY_SOURCES)
 BATCH_TEST_SOURCES := tests/test_batch.c $(LIBRARY_SOURCES)
 TRAINING_ENGINE_TEST_SOURCES := tests/test_training_engine.c $(LIBRARY_SOURCES)
+CHECKPOINT_OBSERVER_TEST_SOURCES := tests/test_checkpoint_observer.c $(LIBRARY_SOURCES)
+PROJECT_LOCK_TEST_SOURCES := tests/test_project_lock.c $(LIBRARY_SOURCES)
+TRAINING_RESUME_TEST_SOURCES := tests/test_training_resume.c $(LIBRARY_SOURCES)
 
 .PHONY: all build build-native build-ppc64le test test-defaults test-sanitize test-thread-sanitize check verify-binaries clean
 
@@ -82,7 +85,19 @@ build/tests/test_training_engine: $(TRAINING_ENGINE_TEST_SOURCES) $(PUBLIC_HEADE
 	mkdir -p $(@D)
 	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) $(TRAINING_ENGINE_TEST_SOURCES) -o $@ $(LDLIBS)
 
-test: build/tests/test_core build/tests/test_model build/tests/test_persistence build/tests/test_math build/tests/test_parallel build/tests/test_backprop build/tests/test_gradient_check build/tests/test_batch build/tests/test_training_engine
+build/tests/test_checkpoint_observer: $(CHECKPOINT_OBSERVER_TEST_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
+	mkdir -p $(@D)
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) $(CHECKPOINT_OBSERVER_TEST_SOURCES) -o $@ $(LDLIBS)
+
+build/tests/test_project_lock: $(PROJECT_LOCK_TEST_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
+	mkdir -p $(@D)
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) $(PROJECT_LOCK_TEST_SOURCES) -o $@ $(LDLIBS)
+
+build/tests/test_training_resume: $(TRAINING_RESUME_TEST_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
+	mkdir -p $(@D)
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) $(TRAINING_RESUME_TEST_SOURCES) -o $@ $(LDLIBS)
+
+test: build/tests/test_core build/tests/test_model build/tests/test_persistence build/tests/test_math build/tests/test_parallel build/tests/test_backprop build/tests/test_gradient_check build/tests/test_batch build/tests/test_training_engine build/tests/test_checkpoint_observer build/tests/test_project_lock build/tests/test_training_resume
 	./build/tests/test_core
 	./build/tests/test_model
 	./build/tests/test_persistence
@@ -92,6 +107,9 @@ test: build/tests/test_core build/tests/test_model build/tests/test_persistence 
 	./build/tests/test_gradient_check
 	./build/tests/test_batch
 	./build/tests/test_training_engine
+	./build/tests/test_checkpoint_observer
+	./build/tests/test_project_lock
+	./build/tests/test_training_resume
 
 test-defaults:
 	mkdir -p build/tests
@@ -147,6 +165,18 @@ test-sanitize:
 		-fsanitize=address,undefined -fno-omit-frame-pointer \
 		$(TRAINING_ENGINE_TEST_SOURCES) -o build/tests/test_training_engine_sanitize $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_training_engine_sanitize
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) -O1 -g \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		$(CHECKPOINT_OBSERVER_TEST_SOURCES) -o build/tests/test_checkpoint_observer_sanitize $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_checkpoint_observer_sanitize
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) -O1 -g \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		$(PROJECT_LOCK_TEST_SOURCES) -o build/tests/test_project_lock_sanitize $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_project_lock_sanitize
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) -O1 -g \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		$(TRAINING_RESUME_TEST_SOURCES) -o build/tests/test_training_resume_sanitize $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_training_resume_sanitize
 
 test-thread-sanitize:
 	mkdir -p build/tests
@@ -158,6 +188,10 @@ test-thread-sanitize:
 		-fsanitize=thread -fno-omit-frame-pointer \
 		$(TRAINING_ENGINE_TEST_SOURCES) -o build/tests/test_training_engine_tsan $(LDLIBS)
 	TSAN_OPTIONS=halt_on_error=1 $(TSAN_RUNNER) ./build/tests/test_training_engine_tsan
+	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) -O1 -g \
+		-fsanitize=thread -fno-omit-frame-pointer \
+		$(TRAINING_RESUME_TEST_SOURCES) -o build/tests/test_training_resume_tsan $(LDLIBS)
+	TSAN_OPTIONS=halt_on_error=1 $(TSAN_RUNNER) ./build/tests/test_training_resume_tsan
 
 check: test test-defaults build-native
 	bash -n neural-c.sh

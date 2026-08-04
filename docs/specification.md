@@ -9,11 +9,13 @@ library must remain independent of third-party runtime dependencies.
 ## Project Files
 
 A project directory uses the conventional filenames `model.txt`,
-`project.conf`, `train.txt`, `weights.txt`, and `checkpoint.txt`. Architecture
-belongs only in `model.txt`; training parameters belong only in `project.conf`; samples belong
-only in `train.txt`. Derived values such as output width and layer count must
-not be repeated. Every text format starts with a versioned `neural-c` header
-and is validated completely before execution.
+`project.conf`, `train.txt`, `weights.txt`, and `checkpoint.txt`, plus the
+operational `.neural-c.lock`. Architecture belongs only in `model.txt`;
+training parameters belong only in `project.conf`; samples belong only in
+`train.txt`. Derived values such as output width and layer count must not be
+repeated. Every text format starts with a versioned `neural-c` header and is
+validated completely before execution. Lock ownership and command access modes
+are defined in `project-locking.md`.
 
 Real numbers use locale-independent ASCII decimal syntax: `.` is the decimal
 separator and `e` or `E` introduces an optional base-10 exponent. Readers must
@@ -59,6 +61,9 @@ replace only the conventional managed files and must preserve unrelated files.
 Existing weights are removed because their shape may no longer match. Managed
 files are staged for rollback so a failed commit restores the previous project.
 An existing checkpoint is removed for the same compatibility reason.
+Existing projects are exclusively locked before forced initialization changes
+any managed file. A newly created directory is exclusively locked before its
+project files are generated.
 
 ## Validation Policy
 

@@ -49,4 +49,16 @@ int neural_model_train_full_batch(
     NeuralTrainingResult *result,
     NeuralError *error);
 
+int neural_model_train_full_batch_range(
+    NeuralModel *model,
+    const NeuralDataset *dataset,
+    const NeuralTrainingConfig *training,
+    const NeuralExecutionConfig *execution,
+    size_t completed_epochs,
+    size_t target_epochs,
+    NeuralEpochObserver observer,
+    void *observer_context,
+    NeuralTrainingResult *result,
+    NeuralError *error);
+
 #endif

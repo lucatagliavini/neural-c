@@ -85,18 +85,31 @@ seed, and writes `weights.txt` atomically only after all epochs complete:
 
 Fresh training refuses to start if `weights.txt` or `checkpoint.txt` already
 exists. Full-batch updates and epoch loss reporting are deterministic across
-worker counts.
+worker counts. Mutating commands hold an exclusive, non-blocking project lock
+in `.neural-c.lock`; `inspect` uses a shared lock and reports an immediate
+project-busy error when training or forced initialization is active.
 
-The CLI reserves two validated, mutually exclusive training modes:
+Resume continues a validated checkpoint and may use a different execution-only
+worker count:
 
 ```sh
 ./neural-c.sh train projects/example --resume
+```
+
+It also safely completes interrupted finalization when both valid persistence
+files remain. Refinement is reserved for the next continuation checkpoint:
+
+```sh
 ./neural-c.sh train projects/example --additional-epochs 2000
 ```
 
-Their execution will be implemented in Milestone 5. Resume will use
-the singular `checkpoint.txt`; refinement will start from final `weights.txt`.
-The generated `checkpoint_interval` setting controls future periodic saves.
+Refinement will start from final `weights.txt`.
+The generated `checkpoint_interval` setting controls periodic saves; setting
+it to `0` disables them while retaining the final `weights.txt` write.
+`SIGINT` and `SIGTERM` stop at the next completed epoch and atomically save one
+recovery checkpoint even when the periodic interval is disabled. After a
+successful emergency save the command exits with status 130 or 143,
+respectively, and the run can continue with `--resume`.
 Versioned parsers, exact `double` round trips, SHA-256 compatibility checks,
 and atomic replacement are already implemented for both persistence files.
 
@@ -113,7 +126,7 @@ Run the architecture-appropriate executable through the launcher:
 ```
 
 `inspect` loads and validates the complete project and prints its canonical
-model, dataset, and training SHA-256 digests. Fresh `train` is implemented;
-`predict`, resume, and refinement remain planned. The reusable option parser
+model, dataset, and training SHA-256 digests. Fresh training and resume are
+implemented; `predict` and refinement remain planned. The reusable option parser
 supports `--option value`, `--option=value`, short options, and `--` before
 positional values that begin with `-`.

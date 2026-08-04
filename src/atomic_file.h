@@ -13,5 +13,8 @@ int neural_atomic_file_write(const char *path,
                              NeuralAtomicFileWriter writer,
                              void *context,
                              NeuralError *error);
+int neural_atomic_file_remove(const char *path,
+                              int allow_missing,
+                              NeuralError *error);
 
 #endif

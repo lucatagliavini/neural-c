@@ -15,6 +15,7 @@
 #include "neural/defaults.h"
 #include "neural/version.h"
 #include "path.h"
+#include "project_lock.h"
 
 enum managed_file_index {
     MANAGED_MODEL,
@@ -277,6 +278,7 @@ int neural_project_initialize(const char *directory,
                               NeuralError *error)
 {
     ManagedFile files[MANAGED_FILE_COUNT] = {{0}};
+    NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
     struct stat directory_status;
     int directory_created = 0;
     int directory_exists;
@@ -328,7 +330,11 @@ int neural_project_initialize(const char *directory,
         directory_created = 1;
     }
 
-    if (!prepare_paths(directory, files, error)) {
+    if (!neural_project_lock_acquire(directory,
+                                     NEURAL_PROJECT_LOCK_EXCLUSIVE,
+                                     &project_lock,
+                                     error) ||
+        !prepare_paths(directory, files, error)) {
         goto cleanup;
     }
     c_numeric_locale = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
@@ -415,7 +421,10 @@ cleanup:
     remove_new_files(files);
     free_managed_files(files);
     if (!success && directory_created) {
+        neural_project_lock_discard(&project_lock);
         (void)rmdir(directory);
+    } else {
+        neural_project_lock_release(&project_lock);
     }
     return success;
 }

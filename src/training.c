@@ -120,11 +120,13 @@ static int evaluate_dataset_loss(const NeuralModel *model,
     return 1;
 }
 
-int neural_model_train_full_batch(
+int neural_model_train_full_batch_range(
     NeuralModel *model,
     const NeuralDataset *dataset,
     const NeuralTrainingConfig *training,
     const NeuralExecutionConfig *execution,
+    size_t completed_epochs,
+    size_t target_epochs,
     NeuralEpochObserver observer,
     void *observer_context,
     NeuralTrainingResult *result,
@@ -145,6 +147,10 @@ int neural_model_train_full_batch(
         return 0;
     }
     *result = completed;
+    if (target_epochs == 0U || completed_epochs > target_epochs) {
+        neural_error_set(error, "training epoch range is invalid");
+        return 0;
+    }
     if (!neural_training_config_validate(training, error) ||
         !neural_parallel_executor_create(model,
                                          dataset,
@@ -167,7 +173,22 @@ int neural_model_train_full_batch(
     }
     completed.worker_count =
         neural_parallel_executor_worker_count(executor);
-    for (epoch_index = 0U; epoch_index < training->epochs;) {
+    if (completed_epochs == target_epochs) {
+        if (!evaluate_dataset_loss(model,
+                                   evaluation_workspace,
+                                   predicted,
+                                   dataset,
+                                   training->loss,
+                                   &completed.final_loss,
+                                   error)) {
+            goto cleanup;
+        }
+        completed.completed_epochs = completed_epochs;
+        *result = completed;
+        success = 1;
+        goto cleanup;
+    }
+    for (epoch_index = completed_epochs; epoch_index < target_epochs;) {
         const NeuralGradient *gradient;
         NeuralEpochReport report;
 
@@ -212,4 +233,28 @@ cleanup:
     neural_workspace_free(evaluation_workspace);
     neural_parallel_executor_free(executor);
     return success;
+}
+
+int neural_model_train_full_batch(
+    NeuralModel *model,
+    const NeuralDataset *dataset,
+    const NeuralTrainingConfig *training,
+    const NeuralExecutionConfig *execution,
+    NeuralEpochObserver observer,
+    void *observer_context,
+    NeuralTrainingResult *result,
+    NeuralError *error)
+{
+    size_t target_epochs = training == NULL ? 0U : training->epochs;
+
+    return neural_model_train_full_batch_range(model,
+                                               dataset,
+                                               training,
+                                               execution,
+                                               0U,
+                                               target_epochs,
+                                               observer,
+                                               observer_context,
+                                               result,
+                                               error);
 }

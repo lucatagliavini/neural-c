@@ -1,5 +1,9 @@
+#define _POSIX_C_SOURCE 200809L
+
+#include <errno.h>
 #include <float.h>
 #include <inttypes.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +18,7 @@
 #include "neural/project.h"
 #include "neural/training.h"
 #include "neural/version.h"
+#include "project_lock.h"
 #include "train_project.h"
 
 enum exit_code {
@@ -22,6 +27,67 @@ enum exit_code {
     EXIT_USAGE = 2,
     EXIT_NOT_IMPLEMENTED = 3
 };
+
+typedef struct {
+    struct sigaction previous_interrupt;
+    struct sigaction previous_terminate;
+    int interrupt_installed;
+    int terminate_installed;
+} TrainingSignalGuard;
+
+static volatile sig_atomic_t training_stop_signal = 0;
+
+static void handle_training_signal(int signal_number)
+{
+    if (training_stop_signal == 0) {
+        training_stop_signal = signal_number;
+    }
+}
+
+static int training_signals_install(TrainingSignalGuard *guard,
+                                    NeuralError *error)
+{
+    struct sigaction action;
+
+    memset(guard, 0, sizeof(*guard));
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = handle_training_signal;
+    action.sa_flags = SA_RESTART;
+    if (sigemptyset(&action.sa_mask) != 0) {
+        neural_error_set(error,
+                         "unable to prepare training signal handlers: %s",
+                         strerror(errno));
+        return 0;
+    }
+    training_stop_signal = 0;
+    if (sigaction(SIGINT, &action, &guard->previous_interrupt) != 0) {
+        neural_error_set(error,
+                         "unable to install SIGINT handler: %s",
+                         strerror(errno));
+        return 0;
+    }
+    guard->interrupt_installed = 1;
+    if (sigaction(SIGTERM, &action, &guard->previous_terminate) != 0) {
+        neural_error_set(error,
+                         "unable to install SIGTERM handler: %s",
+                         strerror(errno));
+        (void)sigaction(SIGINT, &guard->previous_interrupt, NULL);
+        guard->interrupt_installed = 0;
+        return 0;
+    }
+    guard->terminate_installed = 1;
+    return 1;
+}
+
+static void training_signals_restore(TrainingSignalGuard *guard)
+{
+    if (guard->terminate_installed) {
+        (void)sigaction(SIGTERM, &guard->previous_terminate, NULL);
+    }
+    if (guard->interrupt_installed) {
+        (void)sigaction(SIGINT, &guard->previous_interrupt, NULL);
+    }
+}
 
 enum option_index {
     OPTION_HELP,
@@ -73,7 +139,8 @@ static void print_usage(FILE *stream)
             "      --learning-rate VALUE  Default: %.*g\n"
             "      --seed N               Default: %" PRIu64 "\n"
             "      --loss NAME            Default: %s\n"
-            "      --checkpoint-interval N Default: %zu\n"
+            "      --checkpoint-interval N Periodic interval; 0 disables\n"
+            "                              Default: %zu\n"
             "\nTraining continuation:\n"
             "      --resume                Resume checkpoint.txt\n"
             "      --additional-epochs N  Refine weights.txt\n"
@@ -284,12 +351,11 @@ static int command_init(const char *directory,
         goto invalid;
     }
     if (neural_option_is_present(options, OPTION_CHECKPOINT_INTERVAL) &&
-        (!neural_parse_size(
-             neural_option_value(options, OPTION_CHECKPOINT_INTERVAL),
-             &training.checkpoint_interval) ||
-         training.checkpoint_interval == 0U)) {
+        !neural_parse_size(
+            neural_option_value(options, OPTION_CHECKPOINT_INTERVAL),
+            &training.checkpoint_interval)) {
         neural_error_set(&error,
-                         "checkpoint-interval must be a positive integer");
+                         "checkpoint-interval must be a non-negative integer");
         goto invalid;
     }
 
@@ -334,6 +400,9 @@ static int command_train(const char *directory,
     NeuralExecutionConfig execution = {NEURAL_DEFAULT_THREAD_COUNT};
     NeuralTrainingResult result;
     NeuralError error;
+    TrainingSignalGuard signal_guard;
+    int interrupted_signal = 0;
+    int trained;
 
     if (neural_option_is_present(options, OPTION_RESUME) &&
         neural_option_is_present(options, OPTION_ADDITIONAL_EPOCHS)) {
@@ -369,12 +438,35 @@ static int command_train(const char *directory,
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
         return EXIT_USAGE;
     }
-    if (request.mode == NEURAL_TRAIN_FRESH) {
-        if (!neural_project_train_fresh(directory,
-                                        &execution,
-                                        &result,
-                                        &error)) {
+    if (request.mode == NEURAL_TRAIN_FRESH ||
+        request.mode == NEURAL_TRAIN_RESUME) {
+        if (!training_signals_install(&signal_guard, &error)) {
             fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+            return EXIT_RUNTIME;
+        }
+        if (request.mode == NEURAL_TRAIN_FRESH) {
+            trained = neural_project_train_fresh_controlled(
+                directory,
+                &execution,
+                &training_stop_signal,
+                &interrupted_signal,
+                &result,
+                &error);
+        } else {
+            trained = neural_project_train_resume_controlled(
+                directory,
+                &execution,
+                &training_stop_signal,
+                &interrupted_signal,
+                &result,
+                &error);
+        }
+        training_signals_restore(&signal_guard);
+        if (!trained) {
+            fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+            if (interrupted_signal > 0 && interrupted_signal < 128) {
+                return 128 + interrupted_signal;
+            }
             return EXIT_RUNTIME;
         }
         printf("Training complete: %zu epochs, loss %.*g, workers %zu\n",
@@ -424,12 +516,21 @@ static int command_inspect(const char *directory)
     NeuralProject project;
     NeuralProjectDigests digests;
     NeuralModel *runtime_model = NULL;
+    NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
     NeuralError error;
     size_t layer_index;
     size_t output_count;
 
+    if (!neural_project_lock_acquire(directory,
+                                     NEURAL_PROJECT_LOCK_SHARED,
+                                     &project_lock,
+                                     &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        return EXIT_RUNTIME;
+    }
     if (!neural_project_load(directory, &project, &error)) {
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        neural_project_lock_release(&project_lock);
         return EXIT_USAGE;
     }
     if (!neural_model_create(&project.model,
@@ -438,12 +539,14 @@ static int command_inspect(const char *directory)
                              &error)) {
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
         neural_project_free(&project);
+        neural_project_lock_release(&project_lock);
         return EXIT_USAGE;
     }
     if (!neural_project_digests_compute(&project, &digests, &error)) {
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
         neural_model_free(runtime_model);
         neural_project_free(&project);
+        neural_project_lock_release(&project_lock);
         return EXIT_USAGE;
     }
 
@@ -496,6 +599,7 @@ static int command_inspect(const char *directory)
 
     neural_model_free(runtime_model);
     neural_project_free(&project);
+    neural_project_lock_release(&project_lock);
     return EXIT_OK;
 }
 

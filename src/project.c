@@ -359,11 +359,6 @@ int neural_training_config_validate(const NeuralTrainingConfig *config,
         neural_error_set(error, "training configuration has an invalid loss");
         return 0;
     }
-    if (config->checkpoint_interval == 0U) {
-        neural_error_set(error,
-                         "checkpoint_interval must be a positive integer");
-        return 0;
-    }
     return 1;
 }
 
@@ -769,11 +764,11 @@ int neural_training_config_load(const char *path,
         } else if (strcmp(tokens.items[0], "checkpoint_interval") == 0) {
             field = FIELD_CHECKPOINT_INTERVAL;
             if (!neural_parse_size(tokens.items[1],
-                                   &config->checkpoint_interval) ||
-                config->checkpoint_interval == 0U) {
+                                   &config->checkpoint_interval)) {
                 neural_error_set(
                     error,
-                    "%s:%zu: checkpoint_interval must be a positive integer",
+                    "%s:%zu: checkpoint_interval must be a "
+                    "non-negative integer",
                     path,
                     line_number);
                 goto cleanup;

@@ -167,3 +167,24 @@ cleanup:
     free(temporary_path);
     return success;
 }
+
+int neural_atomic_file_remove(const char *path,
+                              int allow_missing,
+                              NeuralError *error)
+{
+    if (path == NULL || path[0] == '\0') {
+        neural_error_set(error, "atomic-remove path is required");
+        return 0;
+    }
+    if (unlink(path) != 0) {
+        if (allow_missing && errno == ENOENT) {
+            return 1;
+        }
+        neural_error_set(error,
+                         "%s: unable to remove file: %s",
+                         path,
+                         strerror(errno));
+        return 0;
+    }
+    return synchronize_parent(path, error);
+}

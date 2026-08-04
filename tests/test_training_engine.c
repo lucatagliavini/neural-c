@@ -249,10 +249,121 @@ static void test_observer_failure(void)
     neural_model_free(model);
 }
 
+static void test_absolute_epoch_ranges(void)
+{
+    NeuralLayerSpec layers[] = {
+        {2U, {NEURAL_ACTIVATION_SIGMOID, 0U, NULL}},
+        {1U, {NEURAL_ACTIVATION_SIGMOID, 0U, NULL}}
+    };
+    NeuralModelSpec spec = {2U, 2U, layers};
+    neural_real inputs[] = {
+        0.0, 0.0,
+        0.0, 1.0,
+        1.0, 0.0,
+        1.0, 1.0
+    };
+    neural_real outputs[] = {0.0, 1.0, 1.0, 0.0};
+    NeuralDataset dataset = {4U, 2U, 1U, inputs, outputs};
+    NeuralTrainingConfig training = {
+        4U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 2U
+    };
+    NeuralExecutionConfig serial = {1U};
+    NeuralExecutionConfig parallel = {4U};
+    NeuralModel *continuous = NULL;
+    NeuralModel *resumed = NULL;
+    NeuralTrainingResult continuous_result;
+    NeuralTrainingResult partial_result;
+    NeuralTrainingResult resumed_result;
+    NeuralTrainingResult no_work_result;
+    NeuralTrainingResult invalid_result = {99U, 99U, 99.0};
+    ObserverState no_work_observer = {5U, 0U, 0U, 0.0};
+    NeuralError error;
+    int prepared;
+
+    prepared = neural_model_create(&spec,
+                                   training.seed,
+                                   &continuous,
+                                   &error) &&
+               neural_model_create(&spec,
+                                   training.seed,
+                                   &resumed,
+                                   &error);
+    check(prepared, "epoch-range models must be prepared");
+    if (prepared) {
+        check(neural_model_train_full_batch(continuous,
+                                            &dataset,
+                                            &training,
+                                            &serial,
+                                            NULL,
+                                            NULL,
+                                            &continuous_result,
+                                            &error),
+              "continuous epoch-range reference must train");
+        check(neural_model_train_full_batch_range(resumed,
+                                                  &dataset,
+                                                  &training,
+                                                  &serial,
+                                                  0U,
+                                                  2U,
+                                                  NULL,
+                                                  NULL,
+                                                  &partial_result,
+                                                  &error) &&
+                  partial_result.completed_epochs == 2U,
+              "the first absolute epoch range must complete");
+        check(neural_model_train_full_batch_range(resumed,
+                                                  &dataset,
+                                                  &training,
+                                                  &parallel,
+                                                  2U,
+                                                  4U,
+                                                  NULL,
+                                                  NULL,
+                                                  &resumed_result,
+                                                  &error) &&
+                  resumed_result.completed_epochs == 4U &&
+                  resumed_result.worker_count == 4U &&
+                  models_equal(continuous, resumed) &&
+                  resumed_result.final_loss == continuous_result.final_loss,
+              "resumed ranges must match continuous training across workers");
+        check(neural_model_train_full_batch_range(
+                  resumed,
+                  &dataset,
+                  &training,
+                  &parallel,
+                  4U,
+                  4U,
+                  observe_epoch,
+                  &no_work_observer,
+                  &no_work_result,
+                  &error) &&
+                  no_work_observer.call_count == 0U &&
+                  no_work_result.completed_epochs == 4U &&
+                  no_work_result.final_loss == resumed_result.final_loss,
+              "an already-complete range must only evaluate final loss");
+        check(!neural_model_train_full_batch_range(resumed,
+                                                   &dataset,
+                                                   &training,
+                                                   &serial,
+                                                   5U,
+                                                   4U,
+                                                   NULL,
+                                                   NULL,
+                                                   &invalid_result,
+                                                   &error) &&
+                  invalid_result.completed_epochs == 0U &&
+                  strstr(error.message, "range is invalid") != NULL,
+              "descending epoch ranges must fail without a result");
+    }
+    neural_model_free(resumed);
+    neural_model_free(continuous);
+}
+
 int main(void)
 {
     test_xor_training_and_determinism();
     test_observer_failure();
+    test_absolute_epoch_ranges();
 
     if (failures != 0) {
         fprintf(stderr, "%d training-engine test(s) failed\n", failures);

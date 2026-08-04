@@ -246,6 +246,12 @@ static void test_valid_loaders(void)
           "full unsigned 64-bit seed range must be supported");
     check(config.checkpoint_interval == 25U,
           "checkpoint interval must be parsed");
+    check(neural_training_config_load(
+              "tests/fixtures/config_zero_checkpoint.txt",
+              &config,
+              &error) &&
+              config.checkpoint_interval == 0U,
+          "zero checkpoint interval must disable periodic saves");
 
     check(neural_dataset_load("tests/fixtures/dataset_valid.txt",
                               3U,
@@ -328,7 +334,6 @@ static void test_invalid_configs(void)
         {"tests/fixtures/config_missing.txt", "required properties"},
         {"tests/fixtures/config_nan.txt", "finite and positive"},
         {"tests/fixtures/config_zero_epochs.txt", "positive integer"},
-        {"tests/fixtures/config_zero_checkpoint.txt", "positive integer"},
         {"tests/fixtures/config_unknown.txt", "unknown configuration property"}
     };
     size_t index;
@@ -400,6 +405,7 @@ static void remove_init_fixture(const char *directory)
         "train.txt",
         "weights.txt",
         "checkpoint.txt",
+        ".neural-c.lock",
         "unrelated.txt",
         ".neural-c-model.new",
         ".neural-c-project.new",

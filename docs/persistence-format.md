@@ -49,8 +49,9 @@ The model stream contains the format tag/version, input and layer counts, then
 each neuron count, activation name, and activation parameters in enum order.
 The dataset stream contains its dimensions and values in sample/input/output
 order. The training stream contains epochs, learning rate, seed, loss, and
-checkpoint interval. Changing any owned value changes only its corresponding
-digest.
+checkpoint interval. A zero checkpoint interval canonically represents
+disabled periodic saves. Changing any owned value changes only its
+corresponding digest.
 
 ## Atomic Replacement
 

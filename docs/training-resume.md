@@ -1,19 +1,24 @@
 # Training Continuation Architecture
 
-This document is authoritative for future training and continuation work. The
-CLI, public request types, canonical digests, and atomic persistence I/O are
-present; the training engine will integrate them in Milestones 4 and 5. The
-exact payload grammar is defined in `persistence-format.md`.
+This document is authoritative for training continuation. The exact payload
+grammar is defined in `persistence-format.md`, epoch execution in
+`training-engine.md`, and concurrency in `project-locking.md`.
 
 ## File Responsibilities
 
 - `model.txt` is the immutable network architecture.
 - `checkpoint.txt` is the latest recoverable state of an incomplete run.
 - `weights.txt` is the completed state used for prediction or refinement.
+- `.neural-c.lock` is permanent operational coordination state and is not
+  persistence provenance.
 
 Use one singular checkpoint that is atomically replaced. Historical snapshots,
 if introduced later, belong in a separate `checkpoints/` directory. Never put
 mutable training state in `model.txt`.
+
+Every mutating training mode holds the exclusive project lock from its initial
+state checks through final persistence. Contention fails immediately; see
+`project-locking.md` for reader behavior and crash-release semantics.
 
 ## Training Modes
 
@@ -28,6 +33,40 @@ A checkpoint always represents the boundary after a fully completed epoch.
 Interrupted partial epochs are discarded and repeated. If both persistence
 files remain after an interrupted finalization, resume validates both and
 finishes the commit; refinement must refuse while a checkpoint exists.
+
+## Resume Validation and State Machine
+
+Resume acquires the exclusive project lock before examining persistence state.
+It loads the project, computes canonical digests, constructs compatible runtime
+models, and validates complete persistence payloads before any disk mutation.
+The checkpoint target must equal the configured project epoch count in addition
+to the persistence-format invariants. A different execution-only worker count
+is allowed.
+
+The valid and invalid file combinations are:
+
+| `checkpoint.txt` | `weights.txt` | Resume action |
+| --- | --- | --- |
+| absent | absent | Fail: no resumable state. |
+| absent | present | Fail: the project is already finalized. |
+| present | absent | Continue from checkpoint, or finalize directly when already at target. |
+| present | present | Validate interrupted finalization, then remove only the checkpoint. |
+
+For interrupted finalization, weights must match all project digests and report
+exactly the checkpoint target as their completed epoch count. The checkpoint
+must independently be valid for the same target. When the checkpoint is also
+at target, its model parameters must be bit-identical to final weights; an older
+periodic checkpoint may legitimately contain earlier parameters. Any malformed
+payload, provenance mismatch, epoch mismatch, or same-epoch parameter mismatch
+leaves both files untouched.
+
+After loading a checkpoint-only state, resume runs the absolute epoch range
+`[completed_epochs, target_epochs)`. Periodic saves retain absolute epoch
+numbering and the original target. A zero interval suppresses those periodic
+replacements but retains the checkpoint that made resume possible. Successful
+completion atomically installs final weights and then durably removes the
+checkpoint. A failure before completion produces no final weights; an ambiguous
+post-rename failure is reconciled by the two-file rule on the next resume.
 
 ## Text Metadata
 
@@ -60,9 +99,33 @@ remain ordered as specified in `parallel-execution.md`.
 
 ## Checkpoint Lifecycle
 
-`checkpoint_interval` in `project.conf` controls periodic saves. A graceful
-interrupt only sets a `sig_atomic_t` stop request; the training loop reaches an
-epoch boundary, writes a same-directory temporary checkpoint, renames it
-atomically, and exits. Successful completion atomically writes `weights.txt`
-before removing `checkpoint.txt`. A crash therefore leaves either the previous
-valid checkpoint or a state that finalization can validate and complete.
+`checkpoint_interval` in `project.conf` controls periodic saves. During fresh
+training, the project-layer epoch observer saves at positive completed-epoch
+multiples of that interval, including the target epoch when it is an interval
+boundary. A value of zero disables periodic saves, so normal completion writes
+only `weights.txt`. Zero remains part of the canonical training digest. A
+graceful `SIGINT` or `SIGTERM` stop still writes an explicit recovery
+checkpoint because signal handling is independent of the periodic schedule.
+The checkpoint contains the canonical project digests, configured target,
+gradient-descent optimizer identity, current model RNG state, and the
+parameters at exactly that completed epoch boundary. The trainer remains
+independent of paths, intervals, and persistence policy.
+
+Each save uses same-directory atomic replacement. A failure before rename
+leaves the previous checkpoint byte-for-byte unchanged; a failure reported
+after rename may leave either the previous or the newly completed payload, but
+never a partially serialized destination. In either case training stops and
+does not write final weights. Temporary files are cleaned up on handled
+failure paths.
+
+A graceful interrupt handler only records the first signal in a
+`volatile sig_atomic_t` stop request. The training loop reaches the next
+coherent epoch boundary, writes a same-directory temporary checkpoint, renames
+it atomically, and stops without producing final weights. After a successful
+emergency save the CLI returns 130 for `SIGINT` or 143 for `SIGTERM`; a failed
+save returns the ordinary runtime failure status and reports the persistence
+error. The recovery checkpoint is resumable through `train --resume`, even
+when `checkpoint_interval` is zero. Successful completion atomically writes
+`weights.txt` before durably removing `checkpoint.txt`. A crash can therefore
+leave the previous valid checkpoint, the latest valid checkpoint, or both a
+valid checkpoint and final weights for later finalization recovery.
