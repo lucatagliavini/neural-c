@@ -26,7 +26,7 @@
     accumulation.
   - **4.5 — complete:** coherent epoch loss reporting, deterministic fresh
     training, end-to-end XOR convergence, and atomic final weights.
-- **Milestone 5 — in progress:**
+- **Milestone 5 — complete:**
   - **5.1 — complete:** project-owned periodic atomic checkpoints at completed
     epoch boundaries, zero-interval opt-out, failure propagation, and
     weights-before-checkpoint-removal finalization; permanent non-blocking
@@ -39,10 +39,12 @@
   - **5.4 — complete:** cumulative refinement through `--additional-epochs`,
     stable baseline weights, resumable absolute-epoch checkpoints, checked
     targets, repeated runs, and graceful interruption.
-  - **5.5 — next:** deterministic prediction CLI.
+  - **5.5 — complete:** validated immutable weight snapshots, shared-lock
+    loading, deterministic multi-sample parallel inference, versioned output,
+    and end-to-end XOR prediction.
 - **Milestone 6:** runtime validation on x86-64 and ppc64le.
 
 Read `specification.md`, `model-runtime.md`, `training-engine.md`,
-`parallel-execution.md`, `project-locking.md`, `persistence-format.md`, and
-`training-resume.md` before changing execution, formats, training state, or
-persistence semantics.
+`parallel-execution.md`, `project-locking.md`, `persistence-format.md`,
+`training-resume.md`, and `prediction.md` before changing execution, formats,
+training state, inference, or persistence semantics.

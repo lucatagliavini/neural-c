@@ -47,6 +47,12 @@ configuration: it is absent from `project.conf`, canonical digests,
 `weights.txt`, and `checkpoint.txt`. Resuming with a different thread count
 must produce the same logical work and reduction order.
 
+Prediction caps its worker count by the number of input samples. Each worker
+owns a model workspace, shares only the immutable loaded snapshot, and writes
+disjoint output slots. Sample results are serialized in original input order;
+there is no cross-sample reduction. Output is therefore byte-identical across
+thread counts. See `prediction.md` for the command and snapshot contract.
+
 Concurrency tests use POSIX threads, matching the supported Linux targets.
 `make test-thread-sanitize` builds and runs the shared-model test with
 ThreadSanitizer when the host runtime supports it.

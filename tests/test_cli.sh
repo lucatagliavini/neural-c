@@ -44,21 +44,23 @@ wait_for_training_lock() {
     local directory=$1
     local process_id=$2
     local attempt
-    local probe_fd
+    local descriptor
+    local expected_path
+    local descriptor_path
+
+    expected_path=$(realpath -m "$directory/.neural-c.lock")
 
     for ((attempt = 0; attempt < 500; attempt++)); do
         if ! kill -0 "$process_id" 2>/dev/null; then
             return 1
         fi
-        exec {probe_fd}<>"$directory/.neural-c.lock"
-        if flock -n "$probe_fd"; then
-            flock -u "$probe_fd"
-            exec {probe_fd}>&-
-        else
-            exec {probe_fd}>&-
-            return 0
-        fi
-        sleep 0.01
+        for descriptor in "/proc/$process_id/fd/"*; do
+            descriptor_path=$(readlink "$descriptor" 2>/dev/null || true)
+            if [[ $descriptor_path == "$expected_path" ]]; then
+                return 0
+            fi
+        done
+        sleep 0.001
     done
     return 1
 }
@@ -150,8 +152,8 @@ predict_threads_output=$(
 )
 predict_threads_status=$?
 set -e
-[[ $predict_threads_status -eq 3 ]]
-grep -q 'threads: 2' <<<"$predict_threads_output"
+[[ $predict_threads_status -eq 1 ]]
+grep -q 'dataset must contain at least one sample' <<<"$predict_threads_output"
 
 set +e
 conflict_output=$(
@@ -185,6 +187,15 @@ busy_additional_status=$?
 set -e
 [[ $busy_additional_status -eq 1 ]]
 grep -q 'project is busy' <<<"$busy_additional_output"
+
+set +e
+busy_predict_output=$(
+    "$executable" predict "$training_dir" 0 0 --threads 2 2>&1
+)
+busy_predict_status=$?
+set -e
+[[ $busy_predict_status -eq 1 ]]
+grep -q 'project is busy' <<<"$busy_predict_output"
 
 mkdir -p "$interrupt_dir"
 cp projects/xor/model.txt "$interrupt_dir/model.txt"
@@ -241,7 +252,7 @@ grep -q '^Training complete: 10000 epochs, loss ' \
 [[ ! -e "$interrupt_dir/checkpoint.txt" ]]
 
 cp "$interrupt_dir/weights.txt" "$interrupt_dir/weights.before"
-"$executable" train "$interrupt_dir" --additional-epochs 10000 --threads 4 \
+"$executable" train "$interrupt_dir" --additional-epochs 20000 --threads 4 \
     >"$interrupt_dir/stdout.txt" 2>"$interrupt_dir/stderr.txt" &
 refinement_pid=$!
 wait_for_training_lock "$interrupt_dir" "$refinement_pid"
@@ -253,21 +264,27 @@ set -e
 [[ $refinement_status -eq 130 ]]
 grep -q 'checkpoint saved' "$interrupt_dir/stderr.txt"
 cmp "$interrupt_dir/weights.before" "$interrupt_dir/weights.txt"
-grep -q '^target_epochs 20000$' "$interrupt_dir/checkpoint.txt"
+grep -q '^target_epochs 30000$' "$interrupt_dir/checkpoint.txt"
 refinement_epoch=$(
     awk '$1 == "completed_epochs" { print $2 }' \
         "$interrupt_dir/checkpoint.txt"
 )
-((refinement_epoch > 10000 && refinement_epoch < 20000))
+((refinement_epoch > 10000 && refinement_epoch < 30000))
+
+baseline_prediction=$(
+    "$executable" predict "$interrupt_dir" 0 0 --threads 2
+)
+grep -q '^completed_epochs 10000$' <<<"$baseline_prediction"
 
 refinement_resume_output=$(
     "$executable" train "$interrupt_dir" --resume --threads 2
 )
-grep -q '^Training complete: 20000 epochs, loss ' \
+grep -q '^Training complete: 30000 epochs, loss ' \
     <<<"$refinement_resume_output"
-grep -q '^completed_epochs 20000$' "$interrupt_dir/weights.txt"
+grep -q '^completed_epochs 30000$' "$interrupt_dir/weights.txt"
 [[ ! -e "$interrupt_dir/checkpoint.txt" ]]
 [[ ! -e "$training_dir/checkpoint.txt" ]]
+
 flock -u "$training_lock_fd"
 exec {training_lock_fd}>&-
 
@@ -286,6 +303,45 @@ grep -q '^Training complete: 10002 epochs, loss ' \
 grep -q ', workers 2$' <<<"$additional_training_output"
 grep -q '^completed_epochs 10002$' "$training_dir/weights.txt"
 [[ ! -e "$training_dir/checkpoint.txt" ]]
+
+prediction_output=$(
+    "$executable" predict "$training_dir" 0 0 0 1 1 0 1 1 --threads 4
+)
+prediction_sequential=$(
+    "$executable" predict "$training_dir" 0 0 0 1 1 0 1 1 --threads 1
+)
+[[ "$prediction_output" == "$prediction_sequential" ]]
+grep -q '^neural-c predictions 1$' <<<"$prediction_output"
+grep -q '^completed_epochs 10002$' <<<"$prediction_output"
+grep -q '^samples 4$' <<<"$prediction_output"
+grep -q '^inputs 2$' <<<"$prediction_output"
+grep -q '^outputs 1$' <<<"$prediction_output"
+grep -q '^end$' <<<"$prediction_output"
+awk '
+    $1 == "sample" && $2 == 0 { ok0 = ($3 < 0.2) }
+    $1 == "sample" && $2 == 1 { ok1 = ($3 > 0.8) }
+    $1 == "sample" && $2 == 2 { ok2 = ($3 > 0.8) }
+    $1 == "sample" && $2 == 3 { ok3 = ($3 < 0.2) }
+    END { exit !(ok0 && ok1 && ok2 && ok3) }
+' <<<"$prediction_output"
+
+set +e
+incomplete_prediction=$(
+    "$executable" predict "$training_dir" 0 --threads 2 2>&1
+)
+incomplete_prediction_status=$?
+set -e
+[[ $incomplete_prediction_status -eq 2 ]]
+grep -q 'complete samples of 2 inputs' <<<"$incomplete_prediction"
+
+set +e
+invalid_prediction=$(
+    "$executable" predict "$training_dir" 0 nan --threads 2 2>&1
+)
+invalid_prediction_status=$?
+set -e
+[[ $invalid_prediction_status -eq 2 ]]
+grep -q 'invalid prediction input 1' <<<"$invalid_prediction"
 
 cp "$training_dir/weights.txt" "$training_dir/weights.before"
 set +e

@@ -26,7 +26,8 @@ Dense layers use the activation grammar documented in `model-runtime.md`.
 Activation parameters belong only in `model.txt` and are covered by model
 digests; weights and checkpoints must not duplicate them.
 The version 1 persistence grammar, digest encoding, and atomic-write contract
-are authoritative in `persistence-format.md`.
+are authoritative in `persistence-format.md`. Prediction snapshot ownership
+and versioned CLI output are authoritative in `prediction.md`.
 
 Thread count is execution-only configuration supplied by `--threads`; it must
 not appear in project files, digests, weights, or checkpoints. Parallel code

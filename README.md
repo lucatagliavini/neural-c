@@ -19,6 +19,8 @@ Thread ownership and deterministic reduction are defined in
 [`docs/parallel-execution.md`](docs/parallel-execution.md).
 Backpropagation, batch semantics, and the persistent worker pool are defined in
 [`docs/training-engine.md`](docs/training-engine.md).
+Prediction snapshots and versioned output are defined in
+[`docs/prediction.md`](docs/prediction.md).
 
 ## Project format
 
@@ -127,8 +129,21 @@ Run the architecture-appropriate executable through the launcher:
 ./neural-c.sh inspect projects/xor
 ```
 
+Predict one or more samples by supplying a flat sequence partitioned by the
+model input width:
+
+```sh
+./neural-c.sh predict projects/xor 0 0 0 1 1 0 1 1 --threads 4
+```
+
+The versioned result reports the loaded weights' cumulative epoch count and
+one ordered `sample` line per input. Snapshot loading holds a shared project
+lock through complete provenance validation, then inference runs from immutable
+memory. Consequently, later training cannot change an in-flight prediction and
+the output is identical across worker counts.
+
 `inspect` loads and validates the complete project and prints its canonical
-model, dataset, and training SHA-256 digests. Fresh training, resume, and
-refinement are implemented; `predict` remains planned. The reusable option parser
+model, dataset, and training SHA-256 digests. Fresh training, resume,
+refinement, and prediction are implemented. The reusable option parser
 supports `--option value`, `--option=value`, short options, and `--` before
 positional values that begin with `-`.

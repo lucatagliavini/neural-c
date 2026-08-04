@@ -49,11 +49,11 @@ A new `init` first claims a missing path with atomic directory creation, then
 creates and acquires the directory's exclusive lock before generating files.
 
 Read-only operations acquire a shared lock. `inspect` retains it until all
-project files have been loaded, validated, and reported. Prediction will retain
-it until model, project provenance, and weights have been loaded and validated;
-inference may then continue from that in-memory snapshot after releasing the
-lock. Multiple readers may coexist, but any reader fails immediately while a
-mutating command holds the exclusive lock.
+project files have been loaded, validated, and reported. Prediction retains it
+until model, project provenance, and weights have been loaded and validated;
+inference then continues from that immutable in-memory snapshot after releasing
+the lock. Multiple readers may coexist, but any reader fails immediately while
+a mutating command holds the exclusive lock.
 
 ## Relationship to Atomic Persistence
 

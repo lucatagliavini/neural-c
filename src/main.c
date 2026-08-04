@@ -18,14 +18,14 @@
 #include "neural/project.h"
 #include "neural/training.h"
 #include "neural/version.h"
+#include "predict_project.h"
 #include "project_lock.h"
 #include "train_project.h"
 
 enum exit_code {
     EXIT_OK = 0,
     EXIT_RUNTIME = 1,
-    EXIT_USAGE = 2,
-    EXIT_NOT_IMPLEMENTED = 3
+    EXIT_USAGE = 2
 };
 
 typedef struct {
@@ -128,7 +128,7 @@ static void print_usage(FILE *stream)
             "Usage:\n"
             "  %s init <project-directory> --inputs N --layer N:ACT [...]\n"
             "  %s train <project-directory>\n"
-            "  %s predict <project-directory> [inputs ...]\n"
+            "  %s predict <project-directory> <INPUT ...>\n"
             "  %s inspect <project-directory>\n"
             "  %s --version\n"
             "\nInit options:\n"
@@ -494,7 +494,17 @@ static int command_predict(const char *project,
                            const NeuralParsedOptions *options)
 {
     NeuralExecutionConfig execution = {NEURAL_DEFAULT_THREAD_COUNT};
+    NeuralPredictionSnapshot snapshot =
+        NEURAL_PREDICTION_SNAPSHOT_INITIALIZER;
+    neural_real *inputs = NULL;
+    neural_real *outputs = NULL;
     NeuralError error;
+    size_t input_value_count;
+    size_t sample_count;
+    size_t output_value_count;
+    size_t worker_count;
+    size_t value_index;
+    int result = EXIT_RUNTIME;
 
     if (neural_option_is_present(options, OPTION_THREADS) &&
         !neural_parse_size(neural_option_value(options, OPTION_THREADS),
@@ -506,13 +516,86 @@ static int command_predict(const char *project,
         fprintf(stderr, "%s: %s\n", neural_name(), error.message);
         return EXIT_USAGE;
     }
-    fprintf(stderr,
-            "%s: 'predict' is not implemented yet "
-            "(project: %s, threads: %zu)\n",
-            neural_name(),
-            project,
-            execution.thread_count);
-    return EXIT_NOT_IMPLEMENTED;
+    if (!neural_project_prediction_load(project, &snapshot, &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        goto cleanup;
+    }
+    input_value_count = options->positional_count - 2U;
+    if (input_value_count == 0U ||
+        input_value_count % snapshot.input_count != 0U) {
+        fprintf(stderr,
+                "%s: predict requires one or more complete samples of %zu inputs\n",
+                neural_name(),
+                snapshot.input_count);
+        result = EXIT_USAGE;
+        goto cleanup;
+    }
+    sample_count = input_value_count / snapshot.input_count;
+    if (input_value_count > SIZE_MAX / sizeof(*inputs) ||
+        sample_count > SIZE_MAX / snapshot.output_count ||
+        sample_count * snapshot.output_count > SIZE_MAX / sizeof(*outputs)) {
+        fprintf(stderr, "%s: prediction input is too large\n", neural_name());
+        result = EXIT_USAGE;
+        goto cleanup;
+    }
+    output_value_count = sample_count * snapshot.output_count;
+    inputs = malloc(input_value_count * sizeof(*inputs));
+    outputs = malloc(output_value_count * sizeof(*outputs));
+    if (inputs == NULL || outputs == NULL) {
+        fprintf(stderr, "%s: unable to allocate prediction buffers\n",
+                neural_name());
+        goto cleanup;
+    }
+    for (value_index = 0U; value_index < input_value_count; value_index++) {
+        const char *text = options->positionals[value_index + 2U];
+
+        if (!neural_parse_real(text, &inputs[value_index])) {
+            fprintf(stderr,
+                    "%s: invalid prediction input %zu: '%s'\n",
+                    neural_name(),
+                    value_index,
+                    text);
+            result = EXIT_USAGE;
+            goto cleanup;
+        }
+    }
+    if (!neural_prediction_run(&snapshot,
+                               inputs,
+                               sample_count,
+                               &execution,
+                               outputs,
+                               &worker_count,
+                               &error)) {
+        fprintf(stderr, "%s: %s\n", neural_name(), error.message);
+        goto cleanup;
+    }
+    printf("%s predictions %d\n", NEURAL_FORMAT_MAGIC, NEURAL_FORMAT_VERSION);
+    printf("completed_epochs %zu\n", snapshot.completed_epochs);
+    printf("samples %zu\n", sample_count);
+    printf("inputs %zu\n", snapshot.input_count);
+    printf("outputs %zu\n", snapshot.output_count);
+    for (value_index = 0U; value_index < sample_count; value_index++) {
+        size_t output_index;
+
+        printf("sample %zu", value_index);
+        for (output_index = 0U;
+             output_index < snapshot.output_count;
+             output_index++) {
+            printf(" %.*g",
+                   DBL_DECIMAL_DIG,
+                   outputs[value_index * snapshot.output_count + output_index]);
+        }
+        putchar('\n');
+    }
+    puts("end");
+    (void)worker_count;
+    result = EXIT_OK;
+
+cleanup:
+    free(outputs);
+    free(inputs);
+    neural_prediction_snapshot_free(&snapshot);
+    return result;
 }
 
 static int command_inspect(const char *directory)
