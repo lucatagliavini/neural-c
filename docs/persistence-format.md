@@ -101,6 +101,14 @@ optional shuffle provenance and before optional early-stopping provenance.
 Zero or an absent property appends nothing. Norms and clipping counts are
 derived telemetry rather than mutable continuation state and are not persisted.
 
+Milestone 9.5 leaves payload versions unchanged. When either regularization
+coefficient is positive, the training stream appends `regularization`,
+`l1_l2_v1`, both canonical binary64 coefficients, and the canonical bias flag
+after optional gradient clipping and before optional early stopping. With both
+coefficients zero, absent legacy properties append nothing and retain the
+previous digest exactly. Penalties and objectives are derived values; no
+regularization buffer or mutable state is persisted.
+
 ## Atomic Replacement
 
 Writers create a unique `*.tmp.XXXXXX` file beside the destination, write and

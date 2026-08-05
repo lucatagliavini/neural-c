@@ -5,8 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "neural/tensor_ops.h"
 #include "compensated_sum.h"
+#include "neural/tensor_ops.h"
 #include "gradient_internal.h"
 
 typedef struct {
@@ -684,6 +684,284 @@ int neural_gradient_clip_norm(NeuralGradient *gradient,
     }
     *original_norm = norm;
     *clipped = did_clip;
+    return 1;
+}
+
+static int regularization_arguments_validate(
+    const NeuralModel *model,
+    neural_real l1_coefficient,
+    neural_real l2_coefficient,
+    int include_biases,
+    NeuralError *error)
+{
+    if (model == NULL || !isfinite(l1_coefficient) ||
+        l1_coefficient < 0.0 || !isfinite(l2_coefficient) ||
+        l2_coefficient < 0.0 ||
+        (include_biases != 0 && include_biases != 1)) {
+        neural_error_set(error, "invalid regularization arguments");
+        return 0;
+    }
+    return 1;
+}
+
+static int regularization_gradient_term(neural_real parameter,
+                                        neural_real l1_coefficient,
+                                        neural_real l2_coefficient,
+                                        neural_real *term)
+{
+    neural_real l1_term;
+    neural_real l2_term;
+    neural_real result;
+
+    if (!isfinite(parameter)) {
+        return 0;
+    }
+    l1_term = parameter > 0.0
+                  ? l1_coefficient
+                  : (parameter < 0.0 ? -l1_coefficient : 0.0);
+    l2_term = l2_coefficient * parameter;
+    result = l1_term + l2_term;
+    if (!isfinite(l2_term) || !isfinite(result)) {
+        return 0;
+    }
+    *term = result;
+    return 1;
+}
+
+static int regularization_gradient_array_validate(
+    const neural_real *parameters,
+    neural_real *gradients,
+    size_t count,
+    neural_real l1_coefficient,
+    neural_real l2_coefficient)
+{
+    size_t index;
+
+    for (index = 0U; index < count; index++) {
+        neural_real term = 0.0;
+
+        if (!isfinite(gradients[index]) ||
+            !regularization_gradient_term(parameters[index],
+                                          l1_coefficient,
+                                          l2_coefficient,
+                                          &term) ||
+            !isfinite(gradients[index] + term)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void regularization_gradient_array_add(
+    const neural_real *parameters,
+    neural_real *gradients,
+    size_t count,
+    neural_real l1_coefficient,
+    neural_real l2_coefficient)
+{
+    size_t index;
+
+    for (index = 0U; index < count; index++) {
+        neural_real term = 0.0;
+
+        (void)regularization_gradient_term(parameters[index],
+                                           l1_coefficient,
+                                           l2_coefficient,
+                                           &term);
+        gradients[index] += term;
+    }
+}
+
+int neural_gradient_add_regularization(NeuralGradient *gradient,
+                                       const NeuralModel *model,
+                                       neural_real l1_coefficient,
+                                       neural_real l2_coefficient,
+                                       int include_biases,
+                                       NeuralError *error)
+{
+    size_t layer_index;
+
+    if (gradient == NULL ||
+        !regularization_arguments_validate(model,
+                                           l1_coefficient,
+                                           l2_coefficient,
+                                           include_biases,
+                                           error) ||
+        !neural_gradient_is_compatible(gradient, model)) {
+        if (error != NULL && error->message[0] == '\0') {
+            neural_error_set(error, "regularization gradient is incompatible");
+        }
+        return 0;
+    }
+    for (layer_index = 0U;
+         layer_index < gradient->layer_count;
+         layer_index++) {
+        NeuralGradientLayer *gradient_layer = &gradient->layers[layer_index];
+        const neural_real *weights;
+        const neural_real *biases;
+        size_t weight_count;
+        size_t bias_count;
+
+        weights = neural_model_layer_weights(model,
+                                             layer_index,
+                                             &weight_count);
+        biases = neural_model_layer_biases(model,
+                                           layer_index,
+                                           &bias_count);
+        if (weights == NULL || biases == NULL ||
+            weight_count != gradient_layer->weight_count ||
+            bias_count != gradient_layer->bias_count ||
+            !regularization_gradient_array_validate(
+                weights,
+                gradient_layer->weights,
+                weight_count,
+                l1_coefficient,
+                l2_coefficient) ||
+            (include_biases != 0 &&
+             !regularization_gradient_array_validate(
+                 biases,
+                 gradient_layer->biases,
+                 bias_count,
+                 l1_coefficient,
+                 l2_coefficient))) {
+            neural_error_set(error,
+                             "regularization gradient is not finite");
+            return 0;
+        }
+    }
+    for (layer_index = 0U;
+         layer_index < gradient->layer_count;
+         layer_index++) {
+        NeuralGradientLayer *gradient_layer = &gradient->layers[layer_index];
+        const neural_real *weights;
+        const neural_real *biases;
+        size_t weight_count;
+        size_t bias_count;
+
+        weights = neural_model_layer_weights(model,
+                                             layer_index,
+                                             &weight_count);
+        biases = neural_model_layer_biases(model,
+                                           layer_index,
+                                           &bias_count);
+        regularization_gradient_array_add(weights,
+                                          gradient_layer->weights,
+                                          weight_count,
+                                          l1_coefficient,
+                                          l2_coefficient);
+        if (include_biases != 0) {
+            regularization_gradient_array_add(
+                biases,
+                gradient_layer->biases,
+                bias_count,
+                l1_coefficient,
+                l2_coefficient);
+        }
+    }
+    return 1;
+}
+
+static int regularization_penalty_array(
+    const neural_real *parameters,
+    size_t count,
+    neural_real l1_coefficient,
+    neural_real l2_coefficient,
+    neural_real *sum,
+    neural_real *compensation)
+{
+    size_t index;
+
+    for (index = 0U; index < count; index++) {
+        neural_real magnitude;
+        neural_real l1_term;
+        neural_real l2_term;
+        neural_real term;
+
+        if (!isfinite(parameters[index])) {
+            return 0;
+        }
+        magnitude = fabs(parameters[index]);
+        l1_term = l1_coefficient * magnitude;
+        if (magnitude < 2.0) {
+            l2_term = (l2_coefficient * (0.5 * magnitude)) * magnitude;
+        } else {
+            l2_term = (l2_coefficient * magnitude) * (0.5 * magnitude);
+        }
+        term = l1_term + l2_term;
+        if (!isfinite(l1_term) || !isfinite(l2_term) || !isfinite(term) ||
+            !neural_compensated_add(*sum,
+                                    *compensation,
+                                    term,
+                                    sum,
+                                    compensation)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int neural_model_regularization_penalty(const NeuralModel *model,
+                                        neural_real l1_coefficient,
+                                        neural_real l2_coefficient,
+                                        int include_biases,
+                                        neural_real *penalty,
+                                        NeuralError *error)
+{
+    neural_real sum = 0.0;
+    neural_real compensation = 0.0;
+    neural_real result;
+    size_t layer_index;
+
+    if (penalty == NULL ||
+        !regularization_arguments_validate(model,
+                                           l1_coefficient,
+                                           l2_coefficient,
+                                           include_biases,
+                                           error)) {
+        if (error != NULL && error->message[0] == '\0') {
+            neural_error_set(error, "regularization penalty output is required");
+        }
+        return 0;
+    }
+    for (layer_index = 0U;
+         layer_index < neural_model_layer_count(model);
+         layer_index++) {
+        const neural_real *weights;
+        const neural_real *biases;
+        size_t weight_count;
+        size_t bias_count;
+
+        weights = neural_model_layer_weights(model,
+                                             layer_index,
+                                             &weight_count);
+        biases = neural_model_layer_biases(model,
+                                           layer_index,
+                                           &bias_count);
+        if (weights == NULL || biases == NULL ||
+            !regularization_penalty_array(weights,
+                                          weight_count,
+                                          l1_coefficient,
+                                          l2_coefficient,
+                                          &sum,
+                                          &compensation) ||
+            (include_biases != 0 &&
+             !regularization_penalty_array(biases,
+                                           bias_count,
+                                           l1_coefficient,
+                                           l2_coefficient,
+                                           &sum,
+                                           &compensation))) {
+            neural_error_set(error,
+                             "regularization penalty is not finite");
+            return 0;
+        }
+    }
+    result = sum + compensation;
+    if (!isfinite(result) || result < 0.0) {
+        neural_error_set(error, "regularization penalty is not finite");
+        return 0;
+    }
+    *penalty = result;
     return 1;
 }
 

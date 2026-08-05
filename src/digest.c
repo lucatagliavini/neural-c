@@ -240,6 +240,14 @@ static void digest_training(const NeuralTrainingConfig *training,
         update_text(&context, "gradient_clip_norm");
         update_real(&context, training->gradient_clip_norm);
     }
+    if (training->l1_regularization > 0.0 ||
+        training->l2_regularization > 0.0) {
+        update_text(&context, "regularization");
+        update_text(&context, "l1_l2_v1");
+        update_real(&context, training->l1_regularization);
+        update_real(&context, training->l2_regularization);
+        update_u64(&context, (uint64_t)training->regularize_biases);
+    }
     if (training->early_stopping_patience != 0U) {
         char validation_digest[NEURAL_SHA256_TEXT_CAPACITY];
 

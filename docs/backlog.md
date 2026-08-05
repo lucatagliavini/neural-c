@@ -4,24 +4,23 @@ This file records work that is ready or intentionally deferred beyond the
 completed items in `roadmap.md`. The session handoff identifies the active
 entry to resume.
 
-## Next session — Milestone 9.5
+## Next session — Milestone 10.1
 
 **Status:** ready to start in the next session.
 
-**Goal:** add configurable L1 and L2 regularization with explicit bias,
-objective-reporting, clipping-order, provenance, and continuation semantics.
+**Goal:** introduce a versioned optimizer abstraction while retaining exact
+gradient-descent behavior, deterministic traversal, and current persistence.
 
-1. Specify the exact L1/L2 objective convention, coefficient scaling, and
-   whether biases are excluded by default or controlled explicitly.
-2. Add regularization to the finalized mean data gradient before norm
-   measurement and clipping, preserving deterministic parameter traversal and
-   the Milestone 9.4 update contract.
-3. Define whether training, validation, and test loss report the data loss or
-   regularized objective, and expose any additional metric without ambiguity.
-4. Treat enabled regularization as training-owned digest provenance while
-   leaving disabled legacy streams and persistence payload versions unchanged.
-5. Add analytic-gradient, finite-difference, zero/disabled, bias-policy,
-   clipping-interaction, worker-count, resume, and cross-runtime coverage.
+1. Define optimizer identity, lifecycle, parameter traversal, and error
+   contracts without yet adding momentum or Adam state.
+2. Route the established reduced, regularized, and clipped gradient through the
+   abstraction while keeping gradient descent bit-identical when selected.
+3. Define project configuration and digest ownership for optimizer identity;
+   preserve absent legacy configuration and existing payload versions.
+4. Keep the abstraction ready for transactional mutable buffers and versioned
+   checkpoint state in Milestones 10.2 and 10.3 without persisting unused data.
+5. Add disabled-compatibility, traversal, failure, worker-count, resume, and
+   cross-runtime coverage.
 6. Update authoritative contracts and qualify with `make check`,
    `make test-sanitize`,
    `make test-thread-sanitize`, and `make check-cross-runtime`.
@@ -35,4 +34,4 @@ objective-reporting, clipping-order, provenance, and continuation semantics.
 
 ## Later roadmap
 
-- Optimizer and convergence work remains grouped under Milestone 10.
+- Milestone 10.2 adds momentum and Adam after the optimizer boundary is stable.

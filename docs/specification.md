@@ -56,7 +56,8 @@ Protocol identity and version constants belong in `version.h`; public type
 sizes belong in the header that defines the type. Runtime behavior such as
 epochs, learning rate, loss, random seed, training batch size, and shuffle
 enablement must remain in project files. Gradient clipping is also training
-behavior and belongs there.
+behavior and belongs there. L1/L2 coefficients and bias treatment are training
+behavior as well.
 Defaults used by `init` may be compile-time constants, but must be materialized
 in `project.conf`; training never reads hidden build defaults. Internal enum
 values, bit masks, array indexes, and
@@ -93,6 +94,14 @@ training provenance rather than execution configuration.
 absent legacy property, disables clipping. A finite positive value enables the
 L2 norm contract in `training-engine.md`; negative and non-finite values are
 invalid. `init --gradient-clip-norm V` configures it.
+
+`l1_regularization` and `l2_regularization` are materialized by new
+initialization. Zero or absent properties disable the corresponding penalty;
+finite positive values enable the exact objective in `training-engine.md`.
+`regularize_biases` defaults to zero and may be one only with an enabled
+penalty. `init --l1 V`, `init --l2 V`, and `init --regularize-biases` configure
+these values. Enabled regularization changes update arithmetic and is canonical
+training provenance.
 
 ## Validation Policy
 

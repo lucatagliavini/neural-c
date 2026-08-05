@@ -72,8 +72,9 @@ generic `math.c`:
 - `tensor_ops.c` implements checked zero, ordered addition, and scaling.
 - `compensated_sum.c` implements the shared finite Neumaier scalar step.
 - `gradient.c` owns model-shaped gradient storage, transactional addition,
-  Neumaier-compensated ordered reduction, stable L2 norm calculation,
-  transactional norm clipping, and the single transactional parameter update.
+  Neumaier-compensated ordered reduction, L1/L2 regularization gradients and
+  penalties, stable L2 norm calculation, transactional norm clipping, and the
+  single transactional parameter update.
 - `batch.c` owns contiguous batch planning, deterministic batch-gradient
   accumulation, and the epoch sample-order plan with its independent
   SplitMix64 shuffle stream; it does not execute samples or update parameters.

@@ -204,7 +204,9 @@ static int prepare_project(const char *directory,
                    sizeof(config_text),
                    "neural-c project 1\n\nepochs %zu\nlearning_rate 0.25\n"
                    "seed 42\nloss mse\ncheckpoint_interval %zu\n"
-                   "batch_size 3\nshuffle 1\ngradient_clip_norm 0.1\n",
+                   "batch_size 3\nshuffle 1\ngradient_clip_norm 0.1\n"
+                   "l1_regularization 0.001\n"
+                   "l2_regularization 0.002\nregularize_biases 1\n",
                    epochs,
                    checkpoint_interval);
     return write_text(model_path, model_text) &&

@@ -43,9 +43,10 @@ waves without allocating or copying one gradient per sample.
 Workers must not update weights directly, use atomic floating-point additions,
 or implement asynchronous “Hogwild” training.
 
-Gradient norm calculation and clipping occur only on the coordinator after the
-ordered mean gradient is finalized. Consequently worker scheduling and count
-cannot change the norm, clipping decision, scaling factor, or update order.
+Regularization, gradient norm calculation, and clipping occur only on the
+coordinator after the ordered mean data gradient is finalized. Consequently
+worker scheduling and count cannot change the penalty contribution, norm,
+clipping decision, scaling factor, or update order.
 
 ## Execution Configuration
 
@@ -59,6 +60,10 @@ must produce the same logical work and reduction order.
 Shuffle is not execution configuration: its enablement and algorithm identity
 are training provenance. Workers receive already selected source indices and
 never advance a PRNG or derive their own order.
+
+Regularization is likewise training provenance. Workers see the read-only model
+only while computing data gradients; the coordinator adds parameter-derived
+terms at the exclusive update boundary.
 
 Prediction caps its worker count by the number of input samples. Each worker
 owns a model workspace, shares only the immutable loaded snapshot, and writes

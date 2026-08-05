@@ -81,6 +81,14 @@ static void test_core_contract(void)
     check(isfinite(NEURAL_DEFAULT_INIT_GRADIENT_CLIP_NORM) &&
               NEURAL_DEFAULT_INIT_GRADIENT_CLIP_NORM >= 0.0,
           "default gradient clip norm must be finite and non-negative");
+    check(isfinite(NEURAL_DEFAULT_INIT_L1_REGULARIZATION) &&
+              NEURAL_DEFAULT_INIT_L1_REGULARIZATION >= 0.0 &&
+              isfinite(NEURAL_DEFAULT_INIT_L2_REGULARIZATION) &&
+              NEURAL_DEFAULT_INIT_L2_REGULARIZATION >= 0.0,
+          "default regularization coefficients must be finite and non-negative");
+    check(NEURAL_DEFAULT_INIT_REGULARIZE_BIASES == 0 ||
+              NEURAL_DEFAULT_INIT_REGULARIZE_BIASES == 1,
+          "default bias regularization must be either zero or one");
     check(isfinite(NEURAL_DEFAULT_GRADIENT_CHECK_EPSILON) &&
               NEURAL_DEFAULT_GRADIENT_CHECK_EPSILON > 0.0,
           "default gradient-check epsilon must be positive and finite");
@@ -271,6 +279,10 @@ static void test_valid_loaders(void)
           "legacy training configuration must default to source order");
     check(config.gradient_clip_norm == 0.0,
           "legacy training configuration must default to unclipped gradients");
+    check(config.l1_regularization == 0.0 &&
+              config.l2_regularization == 0.0 &&
+              config.regularize_biases == 0,
+          "legacy training configuration must default to no regularization");
     check(neural_training_config_load("tests/fixtures/config_batch.txt",
                                       &config,
                                       &error) &&
@@ -280,6 +292,16 @@ static void test_valid_loaders(void)
           "enabled deterministic shuffle must be parsed");
     check(config.gradient_clip_norm == 0.75,
           "positive gradient clipping norm must be parsed");
+    check(config.l1_regularization == 0.125 &&
+              config.l2_regularization == 0.25 &&
+              config.regularize_biases == 1,
+          "regularization configuration must be parsed");
+    config.l1_regularization = 0.0;
+    config.l2_regularization = 0.0;
+    config.regularize_biases = 1;
+    check(!neural_training_config_validate(&config, &error) &&
+              strstr(error.message, "requires positive") != NULL,
+          "bias regularization must require an enabled penalty");
     check(neural_training_config_load(
               "tests/fixtures/config_zero_checkpoint.txt",
               &config,
@@ -376,6 +398,8 @@ static void test_invalid_configs(void)
         {"tests/fixtures/config_bad_batch.txt", "non-negative integer"},
         {"tests/fixtures/config_bad_shuffle.txt", "either 0 or 1"},
         {"tests/fixtures/config_bad_clip.txt", "finite and non-negative"},
+        {"tests/fixtures/config_bad_l1.txt", "finite and non-negative"},
+        {"tests/fixtures/config_bad_regularize_biases.txt", "either 0 or 1"},
         {"tests/fixtures/config_unknown.txt", "unknown configuration property"}
     };
     size_t index;
@@ -499,7 +523,7 @@ static void test_project_initialization(void)
     NeuralModelSpec invalid_model = {0U, 1U, replacement_layers};
     NeuralTrainingConfig training = {
         500U, 0.125, UINT64_C(7), NEURAL_LOSS_MSE, 50U, 0U, 0.0,
-        3U, 1, 0.75
+        3U, 1, 0.75, 0.125, 0.25, 1
     };
     NeuralTrainingConfig incompatible_training = training;
     NeuralModelSpec loaded_model;
@@ -548,7 +572,10 @@ static void test_project_initialization(void)
               loaded_training.checkpoint_interval == 50U &&
               loaded_training.batch_size == 3U &&
               loaded_training.shuffle == 1 &&
-              loaded_training.gradient_clip_norm == 0.75,
+              loaded_training.gradient_clip_norm == 0.75 &&
+              loaded_training.l1_regularization == 0.125 &&
+              loaded_training.l2_regularization == 0.25 &&
+              loaded_training.regularize_biases == 1,
           "generated training values must round-trip");
 
     check(!neural_project_initialize(directory,

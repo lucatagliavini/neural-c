@@ -54,6 +54,18 @@ int neural_gradient_clip_norm(NeuralGradient *gradient,
                               neural_real *original_norm,
                               int *clipped,
                               NeuralError *error);
+int neural_gradient_add_regularization(NeuralGradient *gradient,
+                                       const NeuralModel *model,
+                                       neural_real l1_coefficient,
+                                       neural_real l2_coefficient,
+                                       int include_biases,
+                                       NeuralError *error);
+int neural_model_regularization_penalty(const NeuralModel *model,
+                                        neural_real l1_coefficient,
+                                        neural_real l2_coefficient,
+                                        int include_biases,
+                                        neural_real *penalty,
+                                        NeuralError *error);
 int neural_model_apply_gradient(NeuralModel *model,
                                 const NeuralGradient *gradient,
                                 neural_real learning_rate,

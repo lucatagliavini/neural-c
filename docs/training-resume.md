@@ -152,6 +152,11 @@ Positive `gradient_clip_norm` is likewise training-owned and digest-bound, so
 changing it rejects existing persistence before mutation. Resume needs no new
 field: every regenerated batch gradient is measured and clipped independently,
 and no norm or clipping counter affects the next epoch's state.
+Positive L1 or L2 regularization is training-owned and digest-bound together
+with its bias policy. It needs no checkpoint field: every batch derives its
+penalty gradient from the coherent model at that update boundary. Resume and
+continuous execution therefore reproduce the same terms, objective, clipping
+decision, and model update without mutable regularization state.
 
 ## Checkpoint Lifecycle
 

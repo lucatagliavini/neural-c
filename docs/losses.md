@@ -48,7 +48,8 @@ is evaluated from softmax logits as
 Backpropagation uses the fused pre-activation gradient `softmax(z) - y` and
 does not separately multiply by the softmax Jacobian.
 
-Training loss, validation/early-stopping loss, coherent epoch reporting, and
+Training data loss, validation/early-stopping loss, coherent epoch reporting,
+and
 the model-backed `evaluate` command all use these logits-based formulations.
 The lower-level probability-only loss API remains available for already
 materialized predictions; it bounds exact zero/one probabilities for finite
@@ -58,6 +59,12 @@ depend on that approximation.
 All dataset means retain deterministic sample order and compensated summation.
 Fused output handling changes neither parameter layout nor the ordered
 cross-worker gradient reduction contract.
+
+Regularization does not redefine any configured loss. Training reports a
+separate objective equal to its coherent post-epoch data loss plus the model
+penalty defined in `training-engine.md`. Validation, early stopping, test
+evaluation, and the `evaluate` command continue to report and compare data loss
+only, so dataset metrics do not silently acquire parameter penalties.
 
 ## Persistence compatibility
 

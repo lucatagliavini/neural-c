@@ -217,6 +217,9 @@ static void test_project_digests(NeuralProject *project,
     size_t original_batch_size;
     int original_shuffle;
     neural_real original_gradient_clip_norm;
+    neural_real original_l1_regularization;
+    neural_real original_l2_regularization;
+    int original_regularize_biases;
     NeuralLoss original_loss;
     NeuralError error;
 
@@ -279,6 +282,21 @@ static void test_project_digests(NeuralProject *project,
               strcmp(changed.model, digests->model) == 0,
           "gradient clipping must affect only training provenance");
     project->training.gradient_clip_norm = original_gradient_clip_norm;
+
+    original_l1_regularization = project->training.l1_regularization;
+    original_l2_regularization = project->training.l2_regularization;
+    original_regularize_biases = project->training.regularize_biases;
+    project->training.l1_regularization = 0.125;
+    project->training.l2_regularization = 0.25;
+    project->training.regularize_biases = 1;
+    check(neural_project_digests_compute(project, &changed, &error) &&
+              strcmp(changed.training, digests->training) != 0 &&
+              strcmp(changed.dataset, digests->dataset) == 0 &&
+              strcmp(changed.model, digests->model) == 0,
+          "regularization must affect only training provenance");
+    project->training.l1_regularization = original_l1_regularization;
+    project->training.l2_regularization = original_l2_regularization;
+    project->training.regularize_biases = original_regularize_biases;
 
     original_loss = project->training.loss;
     project->training.loss = NEURAL_LOSS_BINARY_CROSS_ENTROPY;

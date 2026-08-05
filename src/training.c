@@ -6,6 +6,38 @@
 
 #include "neural/batch.h"
 #include "neural/evaluation.h"
+#include "neural/gradient.h"
+
+static int training_objective(const NeuralModel *model,
+                              const NeuralTrainingConfig *training,
+                              neural_real loss,
+                              neural_real *objective,
+                              NeuralError *error)
+{
+    neural_real penalty;
+    neural_real result;
+
+    if (!isfinite(loss) || objective == NULL ||
+        !neural_model_regularization_penalty(
+            model,
+            training->l1_regularization,
+            training->l2_regularization,
+            training->regularize_biases,
+            &penalty,
+            error)) {
+        if (error != NULL && error->message[0] == '\0') {
+            neural_error_set(error, "training objective arguments are invalid");
+        }
+        return 0;
+    }
+    result = loss + penalty;
+    if (!isfinite(result)) {
+        neural_error_set(error, "training objective is not finite");
+        return 0;
+    }
+    *objective = result;
+    return 1;
+}
 
 int neural_training_request_validate(const NeuralTrainingRequest *request,
                                      NeuralError *error)
@@ -62,10 +94,10 @@ int neural_model_train_range(
 {
     NeuralParallelExecutor *executor = NULL;
     NeuralSampleOrder *sample_order = NULL;
-    NeuralGradient *clipped_gradient = NULL;
+    NeuralGradient *update_buffer = NULL;
     NeuralWorkspace *evaluation_workspace = NULL;
     neural_real *predicted = NULL;
-    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0U};
+    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0.0, 0U};
     NeuralBatchPlan batch_plan;
     size_t output_count;
     size_t epoch_index;
@@ -105,8 +137,10 @@ int neural_model_train_range(
             error)) {
         goto cleanup;
     }
-    if (training->gradient_clip_norm > 0.0 &&
-        !neural_gradient_create(model, &clipped_gradient, error)) {
+    if ((training->gradient_clip_norm > 0.0 ||
+         training->l1_regularization > 0.0 ||
+         training->l2_regularization > 0.0) &&
+        !neural_gradient_create(model, &update_buffer, error)) {
         goto cleanup;
     }
     output_count = neural_model_output_count(model);
@@ -128,7 +162,12 @@ int neural_model_train_range(
                                    dataset,
                                    training->loss,
                                    &completed.final_loss,
-                                   error)) {
+                                   error) ||
+            !training_objective(model,
+                                training,
+                                completed.final_loss,
+                                &completed.final_objective,
+                                error)) {
             goto cleanup;
         }
         completed.completed_epochs = completed_epochs;
@@ -172,20 +211,35 @@ int neural_model_train_range(
                 goto cleanup;
             }
             update_gradient = gradient;
-            if (training->gradient_clip_norm > 0.0) {
-                if (!neural_gradient_copy(clipped_gradient,
+            if (update_buffer != NULL) {
+                if (!neural_gradient_copy(update_buffer,
                                           gradient,
-                                          error) ||
-                    !neural_gradient_clip_norm(
-                        clipped_gradient,
+                                          error)) {
+                    goto cleanup;
+                }
+                if ((training->l1_regularization > 0.0 ||
+                     training->l2_regularization > 0.0) &&
+                    !neural_gradient_add_regularization(
+                        update_buffer,
+                        model,
+                        training->l1_regularization,
+                        training->l2_regularization,
+                        training->regularize_biases,
+                        error)) {
+                    goto cleanup;
+                }
+                update_gradient = update_buffer;
+            }
+            if (training->gradient_clip_norm > 0.0) {
+                if (!neural_gradient_clip_norm(
+                        update_buffer,
                         training->gradient_clip_norm,
                         &gradient_norm,
                         &clipped,
                         error)) {
                     goto cleanup;
                 }
-                update_gradient = clipped_gradient;
-            } else if (!neural_gradient_norm(gradient,
+            } else if (!neural_gradient_norm(update_gradient,
                                              &gradient_norm,
                                              error)) {
                 goto cleanup;
@@ -209,7 +263,12 @@ int neural_model_train_range(
                                    dataset,
                                    training->loss,
                                    &report.loss,
-                                   error)) {
+                                   error) ||
+            !training_objective(model,
+                                training,
+                                report.loss,
+                                &report.objective,
+                                error)) {
             goto cleanup;
         }
         report.completed_epochs = epoch_index + 1U;
@@ -220,6 +279,7 @@ int neural_model_train_range(
             if (observer_status == NEURAL_EPOCH_OBSERVER_STOP) {
                 completed.completed_epochs = report.completed_epochs;
                 completed.final_loss = report.loss;
+                completed.final_objective = report.objective;
                 completed.final_max_gradient_norm =
                     report.max_gradient_norm;
                 completed.clipped_batch_count =
@@ -238,6 +298,7 @@ int neural_model_train_range(
         }
         completed.completed_epochs = report.completed_epochs;
         completed.final_loss = report.loss;
+        completed.final_objective = report.objective;
         completed.final_max_gradient_norm = report.max_gradient_norm;
         completed.clipped_batch_count = report.clipped_batch_count;
         epoch_index = report.completed_epochs;
@@ -248,7 +309,7 @@ int neural_model_train_range(
 cleanup:
     free(predicted);
     neural_workspace_free(evaluation_workspace);
-    neural_gradient_free(clipped_gradient);
+    neural_gradient_free(update_buffer);
     neural_sample_order_free(sample_order);
     neural_parallel_executor_free(executor);
     return success;

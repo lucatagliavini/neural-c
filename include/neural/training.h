@@ -23,6 +23,7 @@ typedef struct {
 typedef struct {
     size_t completed_epochs;
     neural_real loss;
+    neural_real objective;
     size_t target_epochs;
     int has_validation_loss;
     neural_real validation_loss;
@@ -44,6 +45,7 @@ typedef struct {
     size_t completed_epochs;
     size_t worker_count;
     neural_real final_loss;
+    neural_real final_objective;
     neural_real final_max_gradient_norm;
     size_t clipped_batch_count;
 } NeuralTrainingResult;

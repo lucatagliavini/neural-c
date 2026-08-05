@@ -110,6 +110,9 @@ enum option_index {
     OPTION_EARLY_STOPPING_PATIENCE,
     OPTION_EARLY_STOPPING_MIN_DELTA,
     OPTION_GRADIENT_CLIP_NORM,
+    OPTION_L1_REGULARIZATION,
+    OPTION_L2_REGULARIZATION,
+    OPTION_REGULARIZE_BIASES,
     OPTION_SHUFFLE,
     OPTION_RESUME,
     OPTION_ADDITIONAL_EPOCHS,
@@ -143,6 +146,9 @@ static const NeuralOptionDefinition option_definitions[OPTION_COUNT] = {
     {"early-stopping-patience", '\0', NEURAL_OPTION_VALUE, 0},
     {"early-stopping-min-delta", '\0', NEURAL_OPTION_VALUE, 0},
     {"gradient-clip-norm", '\0', NEURAL_OPTION_VALUE, 0},
+    {"l1", '\0', NEURAL_OPTION_VALUE, 0},
+    {"l2", '\0', NEURAL_OPTION_VALUE, 0},
+    {"regularize-biases", '\0', NEURAL_OPTION_FLAG, 0},
     {"shuffle", '\0', NEURAL_OPTION_FLAG, 0},
     {"resume", '\0', NEURAL_OPTION_FLAG, 0},
     {"additional-epochs", '\0', NEURAL_OPTION_VALUE, 0},
@@ -191,6 +197,11 @@ static void print_usage(FILE *stream)
             "                              Default: %zu\n"
             "      --gradient-clip-norm V Maximum L2 norm; 0 disables\n"
             "                              Default: %.*g\n"
+            "      --l1 V                 L1 coefficient; 0 disables\n"
+            "                              Default: %.*g\n"
+            "      --l2 V                 L2 coefficient; 0 disables\n"
+            "                              Default: %.*g\n"
+            "      --regularize-biases    Include biases in L1/L2 penalties\n"
             "      --shuffle              Deterministic per-epoch shuffling\n"
             "\nTraining continuation:\n"
             "      --resume                Resume checkpoint.txt\n"
@@ -230,6 +241,10 @@ static void print_usage(FILE *stream)
             (size_t)NEURAL_DEFAULT_INIT_BATCH_SIZE,
             DBL_DECIMAL_DIG,
             (double)NEURAL_DEFAULT_INIT_GRADIENT_CLIP_NORM,
+            DBL_DECIMAL_DIG,
+            (double)NEURAL_DEFAULT_INIT_L1_REGULARIZATION,
+            DBL_DECIMAL_DIG,
+            (double)NEURAL_DEFAULT_INIT_L2_REGULARIZATION,
             (size_t)NEURAL_DEFAULT_THREAD_COUNT,
             (size_t)NEURAL_DEFAULT_REPORT_INTERVAL,
             (size_t)NEURAL_DEFAULT_PREDICTION_BATCH_SIZE);
@@ -301,12 +316,14 @@ static void write_training_history(TrainingProgress *progress,
         }
     }
     if (fprintf(progress->history,
-                "epoch %zu target %zu loss %.*g best %.*g "
+                "epoch %zu target %zu loss %.*g objective %.*g best %.*g "
                 "gradient_norm %.*g clipped_batches %zu",
                 report->completed_epochs,
                 report->target_epochs,
                 DBL_DECIMAL_DIG,
                 report->loss,
+                DBL_DECIMAL_DIG,
+                report->objective,
                 DBL_DECIMAL_DIG,
                 progress->best_loss,
                 DBL_DECIMAL_DIG,
@@ -340,6 +357,7 @@ static int report_training_progress(const NeuralEpochReport *report,
         report->completed_epochs == 0U || report->target_epochs == 0U ||
         report->completed_epochs > report->target_epochs ||
         !isfinite(report->loss) ||
+        !isfinite(report->objective) || report->objective < report->loss ||
         !isfinite(report->max_gradient_norm) ||
         report->max_gradient_norm < 0.0) {
         neural_error_set(error, "training progress report is invalid");
@@ -362,12 +380,15 @@ static int report_training_progress(const NeuralEpochReport *report,
         return 1;
     }
     if (fprintf(stderr,
-                "Training progress: epoch %zu/%zu, loss %.*g, best %.*g, "
+                "Training progress: epoch %zu/%zu, loss %.*g, objective %.*g, "
+                "best %.*g, "
                 "gradient norm %.*g, clipped batches %zu",
                 report->completed_epochs,
                 report->target_epochs,
                 DBL_DECIMAL_DIG,
                 report->loss,
+                DBL_DECIMAL_DIG,
+                report->objective,
                 DBL_DECIMAL_DIG,
                 progress->best_loss,
                 DBL_DECIMAL_DIG,
@@ -538,7 +559,10 @@ static int command_init(const char *directory,
         NEURAL_DEFAULT_INIT_EARLY_STOPPING_MIN_DELTA,
         NEURAL_DEFAULT_INIT_BATCH_SIZE,
         NEURAL_DEFAULT_INIT_SHUFFLE,
-        NEURAL_DEFAULT_INIT_GRADIENT_CLIP_NORM
+        NEURAL_DEFAULT_INIT_GRADIENT_CLIP_NORM,
+        NEURAL_DEFAULT_INIT_L1_REGULARIZATION,
+        NEURAL_DEFAULT_INIT_L2_REGULARIZATION,
+        NEURAL_DEFAULT_INIT_REGULARIZE_BIASES
     };
     NeuralError error;
     const char *loss_name;
@@ -658,6 +682,25 @@ static int command_init(const char *directory,
             &error,
             "gradient-clip-norm must be finite and non-negative");
         goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_L1_REGULARIZATION) &&
+        (!neural_parse_real(
+             neural_option_value(options, OPTION_L1_REGULARIZATION),
+             &training.l1_regularization) ||
+         training.l1_regularization < 0.0)) {
+        neural_error_set(&error, "l1 must be finite and non-negative");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_L2_REGULARIZATION) &&
+        (!neural_parse_real(
+             neural_option_value(options, OPTION_L2_REGULARIZATION),
+             &training.l2_regularization) ||
+         training.l2_regularization < 0.0)) {
+        neural_error_set(&error, "l2 must be finite and non-negative");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_REGULARIZE_BIASES)) {
+        training.regularize_biases = 1;
     }
     if (!neural_training_config_validate(&training, &error)) {
         goto invalid;
@@ -823,11 +866,14 @@ static int command_train(const char *directory,
             }
             return EXIT_RUNTIME;
         }
-        printf("Training complete: %zu epochs, loss %.*g, gradient norm %.*g, "
+        printf("Training complete: %zu epochs, loss %.*g, objective %.*g, "
+               "gradient norm %.*g, "
                "clipped batches %zu, workers %zu\n",
                result.completed_epochs,
                DBL_DECIMAL_DIG,
                result.final_loss,
+               DBL_DECIMAL_DIG,
+               result.final_objective,
                DBL_DECIMAL_DIG,
                result.final_max_gradient_norm,
                result.clipped_batch_count,
@@ -1649,6 +1695,22 @@ static int command_inspect(const char *directory, int include_state)
                DBL_DECIMAL_DIG,
                project.training.gradient_clip_norm);
     }
+    if (project.training.l1_regularization == 0.0) {
+        printf("L1 regularization: disabled\n");
+    } else {
+        printf("L1 regularization: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.training.l1_regularization);
+    }
+    if (project.training.l2_regularization == 0.0) {
+        printf("L2 regularization: disabled\n");
+    } else {
+        printf("L2 regularization: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.training.l2_regularization);
+    }
+    printf("Regularize biases: %s\n",
+           project.training.regularize_biases ? "enabled" : "disabled");
     printf("Early stopping patience: %zu\n",
            project.training.early_stopping_patience);
     printf("Early stopping min delta: %.*g\n",

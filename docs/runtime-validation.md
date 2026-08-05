@@ -113,3 +113,6 @@ The bidirectional interrupted-resume fixtures also enable shuffle, proving that
 neither architecture needs additional mutable checkpoint state. Those fixtures
 also configure gradient clipping; the categorical fixture exercises norm
 calculation and clipping beside shuffle and an incomplete final batch.
+The interrupted-resume fixtures and categorical fixture also enable L1/L2 bias
+regularization, covering objective provenance and coordinator-side ordering on
+both runtimes.

@@ -134,7 +134,11 @@ without `--shuffle`, retain source order. `--gradient-clip-norm V` enables
 deterministic L2 clipping of each finalized mean batch gradient. Training
 reports the maximum pre-clipping gradient norm and number of clipped batches
 for the last epoch; zero, the default, disables clipping and preserves legacy
-updates exactly. Mutating commands hold an exclusive, non-blocking project lock
+updates exactly. `--l1 V` and `--l2 V` add deterministic regularization before
+norm measurement and clipping; weights are regularized by default, while
+`--regularize-biases` includes biases explicitly. Progress and completion keep
+data `loss` distinct from the regularized `objective`. Mutating commands hold
+an exclusive, non-blocking project lock
 in `.neural-c.lock`; `inspect` uses a shared lock and reports an immediate
 project-busy error when training or forced initialization is active.
 

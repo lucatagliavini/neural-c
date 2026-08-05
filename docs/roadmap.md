@@ -105,8 +105,9 @@
   - **9.4 — complete:** add stable pre-clipping L2 gradient norm reporting and
     configurable deterministic clipping after ordered batch reduction, with
     explicit future regularization and optimizer ordering.
-  - **9.5:** add L1 and L2 regularization with documented bias treatment,
-    training-digest ownership, and consistent objective reporting.
+  - **9.5 — complete:** add deterministic L1/L2 regularization with explicit
+    opt-in bias treatment, training-digest ownership, data-loss versus
+    objective reporting, and ordering before norm measurement and clipping.
 - **Milestone 10 — optimizers and convergence control:**
   - **10.1:** introduce a versioned optimizer abstraction while preserving the
     existing gradient-descent behavior and deterministic parameter traversal.

@@ -105,6 +105,18 @@ grep -q 'binary_cross_entropy requires sigmoid output' \
     <<<"$invalid_loss_output"
 [[ ! -e $project_dir ]]
 
+set +e
+invalid_regularization_output=$(
+    "$executable" init "$project_dir" --inputs 1 --layer 1:linear \
+        --regularize-biases 2>&1
+)
+invalid_regularization_status=$?
+set -e
+[[ $invalid_regularization_status -eq 2 ]]
+grep -q 'requires positive L1 or L2 regularization' \
+    <<<"$invalid_regularization_output"
+[[ ! -e $project_dir ]]
+
 "$executable" init "$project_dir" \
     --inputs 3 \
     --layer 4:leaky_relu:alpha=0.01 \
@@ -115,6 +127,9 @@ grep -q 'binary_cross_entropy requires sigmoid output' \
     --checkpoint-interval 0 \
     --batch-size 3 \
     --gradient-clip-norm 0.75 \
+    --l1 0.125 \
+    --l2 0.25 \
+    --regularize-biases \
     --shuffle
 
 grep -q '^input 3$' "$project_dir/model.txt"
@@ -125,11 +140,17 @@ grep -q '^checkpoint_interval 0$' "$project_dir/project.conf"
 grep -q '^batch_size 3$' "$project_dir/project.conf"
 grep -q '^shuffle 1$' "$project_dir/project.conf"
 grep -q '^gradient_clip_norm 0.75$' "$project_dir/project.conf"
+grep -q '^l1_regularization 0.125$' "$project_dir/project.conf"
+grep -q '^l2_regularization 0.25$' "$project_dir/project.conf"
+grep -q '^regularize_biases 1$' "$project_dir/project.conf"
 printf '0 0 0 -> 0 0\n' >>"$project_dir/train.txt"
 configured_inspect=$("$executable" inspect "$project_dir")
 grep -q '^Batch size: 3$' <<<"$configured_inspect"
 grep -q '^Shuffle: enabled$' <<<"$configured_inspect"
 grep -q '^Gradient clip norm: 0.75$' <<<"$configured_inspect"
+grep -q '^L1 regularization: 0.125$' <<<"$configured_inspect"
+grep -q '^L2 regularization: 0.25$' <<<"$configured_inspect"
+grep -q '^Regularize biases: enabled$' <<<"$configured_inspect"
 
 if "$executable" init "$project_dir" --inputs 1 --layer 1:sigmoid; then
     echo "init unexpectedly overwrote an existing project" >&2
@@ -145,6 +166,9 @@ grep -q '^checkpoint_interval 100$' "$project_dir/project.conf"
 grep -q '^batch_size 0$' "$project_dir/project.conf"
 grep -q '^shuffle 0$' "$project_dir/project.conf"
 grep -q '^gradient_clip_norm 0$' "$project_dir/project.conf"
+grep -q '^l1_regularization 0$' "$project_dir/project.conf"
+grep -q '^l2_regularization 0$' "$project_dir/project.conf"
+grep -q '^regularize_biases 0$' "$project_dir/project.conf"
 ! grep -q 'threads' "$project_dir/project.conf"
 
 exec {init_lock_fd}<>"$project_dir/.neural-c.lock"
@@ -411,7 +435,7 @@ training_output=$(<"$training_dir/stdout.txt")
 grep -q '^Training complete: 10000 epochs, loss ' <<<"$training_output"
 grep -q ', workers 4$' <<<"$training_output"
 [[ $(grep -c '^Training progress: epoch ' "$training_dir/stderr.txt") -eq 4 ]]
-grep -q '^Training progress: epoch 2500/10000, loss .*best .*improvement n/a, relative n/a$' \
+grep -q '^Training progress: epoch 2500/10000, loss .*objective .*best .*improvement n/a, relative n/a$' \
     "$training_dir/stderr.txt"
 grep -q '^Training progress: epoch 10000/10000, loss .*improvement .*relative ' \
     "$training_dir/stderr.txt"
@@ -422,7 +446,7 @@ grep -q '^completed_epochs 10000$' "$training_dir/weights.txt"
 [[ ! -e "$training_dir/checkpoint.txt" ]]
 grep -q '^neural-c history 1$' "$training_dir/history.txt"
 [[ $(grep -c '^epoch ' "$training_dir/history.txt") -eq 4 ]]
-grep -q '^epoch 10000 target 10000 loss .* best ' \
+grep -q '^epoch 10000 target 10000 loss .* objective .* best ' \
     "$training_dir/history.txt"
 grep -q '^epoch .*gradient_norm .*clipped_batches ' \
     "$training_dir/history.txt"

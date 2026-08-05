@@ -37,6 +37,9 @@ typedef struct {
     size_t batch_size;
     int shuffle;
     neural_real gradient_clip_norm;
+    neural_real l1_regularization;
+    neural_real l2_regularization;
+    int regularize_biases;
 } NeuralTrainingConfig;
 
 typedef struct {

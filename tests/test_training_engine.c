@@ -32,6 +32,7 @@ static int observe_epoch(const NeuralEpochReport *report,
     ObserverState *state = opaque;
 
     if (report == NULL || state == NULL || !isfinite(report->loss) ||
+        !isfinite(report->objective) || report->objective < report->loss ||
         !isfinite(report->max_gradient_norm) ||
         report->max_gradient_norm < 0.0 ||
         report->completed_epochs != state->next_epoch) {
@@ -158,7 +159,7 @@ static void test_xor_training_and_determinism(void)
     NeuralDataset dataset = {4U, 2U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
         10000U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 100U, 0U, 0.0,
-        0U, 0, 0.0
+        0U, 0, 0.0, 0.0, 0.0, 0
     };
     NeuralExecutionConfig serial = {1U};
     NeuralExecutionConfig parallel = {4U};
@@ -207,7 +208,9 @@ static void test_xor_training_and_determinism(void)
                   observer.last_loss == serial_result.final_loss,
               "training results and epoch reports must be complete");
         check(models_equal(serial_model, parallel_model) &&
-                  serial_result.final_loss == parallel_result.final_loss,
+                  serial_result.final_loss == parallel_result.final_loss &&
+                  serial_result.final_objective == serial_result.final_loss &&
+                  parallel_result.final_objective == parallel_result.final_loss,
               "training must be bit-identical across worker counts");
         check(evaluate_loss(serial_model,
                             &dataset,
@@ -239,7 +242,8 @@ static void test_binary_cross_entropy_training(void)
     NeuralDataset dataset = {4U, 2U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
         5000U, 0.5, UINT64_C(42),
-        NEURAL_LOSS_BINARY_CROSS_ENTROPY, 0U, 0U, 0.0, 0U, 0, 0.0
+        NEURAL_LOSS_BINARY_CROSS_ENTROPY, 0U, 0U, 0.0, 0U, 0, 0.0,
+        0.0, 0.0, 0
     };
     NeuralExecutionConfig serial = {1U};
     NeuralExecutionConfig parallel = {4U};
@@ -293,10 +297,11 @@ static void test_observer_failure(void)
     neural_real outputs[] = {0.0};
     NeuralDataset dataset = {1U, 1U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
-        3U, 0.1, UINT64_C(7), NEURAL_LOSS_MSE, 1U, 0U, 0.0, 0U, 0, 0.0
+        3U, 0.1, UINT64_C(7), NEURAL_LOSS_MSE, 1U, 0U, 0.0,
+        0U, 0, 0.0, 0.0, 0.0, 0
     };
     NeuralExecutionConfig execution = {1U};
-    NeuralTrainingResult result = {99U, 99U, 99.0, 99.0, 99U};
+    NeuralTrainingResult result = {99U, 99U, 99.0, 99.0, 99.0, 99U};
     ObserverState observer = {1U, 0U, 2U, 0.0};
     NeuralModel *model = NULL;
     NeuralError error;
@@ -336,7 +341,8 @@ static void test_absolute_epoch_ranges(void)
     neural_real outputs[] = {0.0, 1.0, 1.0, 0.0};
     NeuralDataset dataset = {4U, 2U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
-        4U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 2U, 0U, 0.0, 0U, 0, 0.0
+        4U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 2U, 0U, 0.0,
+        0U, 0, 0.0, 0.0, 0.0, 0
     };
     NeuralExecutionConfig serial = {1U};
     NeuralExecutionConfig parallel = {4U};
@@ -346,7 +352,9 @@ static void test_absolute_epoch_ranges(void)
     NeuralTrainingResult partial_result;
     NeuralTrainingResult resumed_result;
     NeuralTrainingResult no_work_result;
-    NeuralTrainingResult invalid_result = {99U, 99U, 99.0, 99.0, 99U};
+    NeuralTrainingResult invalid_result = {
+        99U, 99U, 99.0, 99.0, 99.0, 99U
+    };
     ObserverState no_work_observer = {5U, 0U, 0U, 0.0};
     NeuralError error;
     int prepared;
@@ -442,12 +450,13 @@ static void test_mini_batch_determinism_and_continuation(void)
     NeuralDataset dataset = {5U, 1U, 1U, inputs, outputs};
     NeuralTrainingConfig mini_batch = {
         5U, 0.05, UINT64_C(91), NEURAL_LOSS_MSE, 0U, 0U, 0.0,
-        2U, 1, 0.0
+        2U, 1, 0.0, 0.0, 0.0, 0
     };
     NeuralTrainingConfig full_batch = mini_batch;
     NeuralTrainingConfig oversized_batch = mini_batch;
     NeuralTrainingConfig source_order_config = mini_batch;
     NeuralTrainingConfig clipped_config = mini_batch;
+    NeuralTrainingConfig regularized_config = mini_batch;
     NeuralExecutionConfig serial = {1U};
     NeuralExecutionConfig parallel = {4U};
     NeuralModel *continuous = NULL;
@@ -459,6 +468,9 @@ static void test_mini_batch_determinism_and_continuation(void)
     NeuralModel *clipped_continuous = NULL;
     NeuralModel *clipped_threaded = NULL;
     NeuralModel *clipped_resumed = NULL;
+    NeuralModel *regularized_continuous = NULL;
+    NeuralModel *regularized_threaded = NULL;
+    NeuralModel *regularized_resumed = NULL;
     NeuralTrainingResult continuous_result;
     NeuralTrainingResult threaded_result;
     NeuralTrainingResult partial_result;
@@ -470,6 +482,10 @@ static void test_mini_batch_determinism_and_continuation(void)
     NeuralTrainingResult clipped_threaded_result;
     NeuralTrainingResult clipped_partial_result;
     NeuralTrainingResult clipped_resumed_result;
+    NeuralTrainingResult regularized_continuous_result;
+    NeuralTrainingResult regularized_threaded_result;
+    NeuralTrainingResult regularized_partial_result;
+    NeuralTrainingResult regularized_resumed_result;
     NeuralError error;
     int prepared;
 
@@ -477,6 +493,10 @@ static void test_mini_batch_determinism_and_continuation(void)
     oversized_batch.batch_size = 99U;
     source_order_config.shuffle = 0;
     clipped_config.gradient_clip_norm = 1e-6;
+    regularized_config.gradient_clip_norm = 0.1;
+    regularized_config.l1_regularization = 0.01;
+    regularized_config.l2_regularization = 0.02;
+    regularized_config.regularize_biases = 1;
     prepared = neural_model_create(&spec, mini_batch.seed,
                                    &continuous, &error) &&
                neural_model_create(&spec, mini_batch.seed,
@@ -494,7 +514,13 @@ static void test_mini_batch_determinism_and_continuation(void)
                neural_model_create(&spec, mini_batch.seed,
                                    &clipped_threaded, &error) &&
                neural_model_create(&spec, mini_batch.seed,
-                                   &clipped_resumed, &error);
+                                   &clipped_resumed, &error) &&
+               neural_model_create(&spec, mini_batch.seed,
+                                   &regularized_continuous, &error) &&
+               neural_model_create(&spec, mini_batch.seed,
+                                   &regularized_threaded, &error) &&
+               neural_model_create(&spec, mini_batch.seed,
+                                   &regularized_resumed, &error);
     check(prepared, "mini-batch training models must be prepared");
     if (prepared) {
         check(neural_model_train(continuous,
@@ -626,7 +652,69 @@ static void test_mini_batch_determinism_and_continuation(void)
                   clipped_continuous_result.clipped_batch_count ==
                       clipped_resumed_result.clipped_batch_count,
               "clipped absolute epoch ranges must continue exactly");
+        check(neural_model_train(regularized_continuous,
+                                 &dataset,
+                                 &regularized_config,
+                                 &serial,
+                                 NULL,
+                                 NULL,
+                                 &regularized_continuous_result,
+                                 &error) &&
+                  neural_model_train(regularized_threaded,
+                                     &dataset,
+                                     &regularized_config,
+                                     &parallel,
+                                     NULL,
+                                     NULL,
+                                     &regularized_threaded_result,
+                                     &error) &&
+                  models_equal(regularized_continuous,
+                               regularized_threaded) &&
+                  regularized_continuous_result.final_loss ==
+                      regularized_threaded_result.final_loss &&
+                  regularized_continuous_result.final_objective ==
+                      regularized_threaded_result.final_objective &&
+                  regularized_continuous_result.final_objective >
+                      regularized_continuous_result.final_loss &&
+                  regularized_continuous_result.clipped_batch_count > 0U &&
+                  !models_equal(clipped_continuous,
+                                regularized_continuous),
+              "regularization before clipping must be thread-independent");
+        check(neural_model_train_range(regularized_resumed,
+                                       &dataset,
+                                       &regularized_config,
+                                       &parallel,
+                                       0U,
+                                       2U,
+                                       NULL,
+                                       NULL,
+                                       &regularized_partial_result,
+                                       &error) &&
+                  neural_model_train_range(regularized_resumed,
+                                           &dataset,
+                                           &regularized_config,
+                                           &serial,
+                                           2U,
+                                           regularized_config.epochs,
+                                           NULL,
+                                           NULL,
+                                           &regularized_resumed_result,
+                                           &error) &&
+                  models_equal(regularized_continuous,
+                               regularized_resumed) &&
+                  regularized_continuous_result.final_loss ==
+                      regularized_resumed_result.final_loss &&
+                  regularized_continuous_result.final_objective ==
+                      regularized_resumed_result.final_objective &&
+                  regularized_continuous_result.final_max_gradient_norm ==
+                      regularized_resumed_result.final_max_gradient_norm &&
+                  regularized_continuous_result.clipped_batch_count ==
+                      regularized_resumed_result.clipped_batch_count,
+              "regularized absolute epoch ranges must continue exactly");
     }
+    neural_model_free(regularized_resumed);
+    neural_model_free(regularized_threaded);
+    neural_model_free(regularized_continuous);
     neural_model_free(clipped_resumed);
     neural_model_free(clipped_threaded);
     neural_model_free(clipped_continuous);
@@ -638,6 +726,62 @@ static void test_mini_batch_determinism_and_continuation(void)
     neural_model_free(continuous);
 }
 
+static void test_regularization_clipping_order(void)
+{
+    NeuralLayerSpec layer = {
+        1U, {NEURAL_ACTIVATION_LINEAR, 0U, NULL}
+    };
+    NeuralModelSpec spec = {1U, 1U, &layer};
+    neural_real inputs[] = {1.0};
+    neural_real outputs[] = {0.0};
+    NeuralDataset dataset = {1U, 1U, 1U, inputs, outputs};
+    NeuralTrainingConfig training = {
+        1U, 0.1, UINT64_C(92), NEURAL_LOSS_MSE, 0U, 0U, 0.0,
+        0U, 0, 1.0, 0.5, 0.25, 0
+    };
+    NeuralExecutionConfig execution = {1U};
+    neural_real initial_weights[] = {2.0};
+    neural_real initial_biases[] = {3.0};
+    NeuralModel *model = NULL;
+    NeuralTrainingResult result;
+    NeuralError error;
+    neural_real norm = sqrt(221.0);
+    const neural_real *weights;
+    const neural_real *biases;
+    int prepared;
+
+    prepared = neural_model_create(&spec, training.seed, &model, &error) &&
+               neural_model_set_layer_parameters(model,
+                                                 0U,
+                                                 initial_weights,
+                                                 1U,
+                                                 initial_biases,
+                                                 1U,
+                                                 &error);
+    check(prepared, "regularization clipping-order model must be prepared");
+    if (prepared) {
+        check(neural_model_train(model,
+                                 &dataset,
+                                 &training,
+                                 &execution,
+                                 NULL,
+                                 NULL,
+                                 &result,
+                                 &error),
+              "regularized clipped update must complete");
+        weights = neural_model_layer_weights(model, 0U, NULL);
+        biases = neural_model_layer_biases(model, 0U, NULL);
+        check(weights != NULL && biases != NULL &&
+                  fabs(weights[0] - (2.0 - 0.1 * 11.0 / norm)) < 1e-15 &&
+                  fabs(biases[0] - (3.0 - 0.1 * 10.0 / norm)) < 1e-15 &&
+                  fabs(result.final_max_gradient_norm - norm) < 4e-15 &&
+                  result.clipped_batch_count == 1U &&
+                  result.final_objective > result.final_loss,
+              "regularization must precede norm measurement and clipping");
+    }
+    neural_model_free(model);
+}
+
 int main(void)
 {
     test_xor_training_and_determinism();
@@ -645,6 +789,7 @@ int main(void)
     test_observer_failure();
     test_absolute_epoch_ranges();
     test_mini_batch_determinism_and_continuation();
+    test_regularization_clipping_order();
 
     if (failures != 0) {
         fprintf(stderr, "%d training-engine test(s) failed\n", failures);

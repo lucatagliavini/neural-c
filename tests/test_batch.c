@@ -514,6 +514,140 @@ static void test_gradient_norm_and_clipping(void)
     neural_model_free(model);
 }
 
+static void test_regularization(void)
+{
+    NeuralLayerSpec layer = {
+        1U, {NEURAL_ACTIVATION_LINEAR, 0U, NULL}
+    };
+    NeuralModelSpec spec = {2U, 1U, &layer};
+    neural_real weights[] = {-2.0, 3.0};
+    neural_real biases[] = {4.0};
+    NeuralModel *model = NULL;
+    NeuralGradient *gradient = NULL;
+    NeuralError error;
+    neural_real *gradient_weights;
+    neural_real *gradient_biases;
+    neural_real penalty = -1.0;
+    neural_real positive_penalty = 0.0;
+    neural_real negative_penalty = 0.0;
+    const neural_real epsilon = 1e-6;
+    int prepared;
+
+    prepared = neural_model_create(&spec, UINT64_C(26), &model, &error) &&
+               neural_model_set_layer_parameters(model,
+                                                 0U,
+                                                 weights,
+                                                 2U,
+                                                 biases,
+                                                 1U,
+                                                 &error) &&
+               neural_gradient_create(model, &gradient, &error) &&
+               fill_gradient(gradient, 1.0);
+    check(prepared, "regularization fixture must be prepared");
+    if (prepared) {
+        gradient_weights = neural_gradient_layer_weights(gradient, 0U, NULL);
+        gradient_biases = neural_gradient_layer_biases(gradient, 0U, NULL);
+        check(neural_model_regularization_penalty(model,
+                                                  0.5,
+                                                  0.25,
+                                                  0,
+                                                  &penalty,
+                                                  &error) &&
+                  penalty == 4.125,
+              "regularization penalty must use L1 plus half-scaled L2");
+        check(neural_gradient_add_regularization(gradient,
+                                                 model,
+                                                 0.5,
+                                                 0.25,
+                                                 0,
+                                                 &error) &&
+                  gradient_weights[0] == 0.0 &&
+                  gradient_weights[1] == 2.25 &&
+                  gradient_biases[0] == 1.0,
+              "regularization gradient must exclude biases by default");
+        check(fill_gradient(gradient, 1.0) &&
+                  neural_model_regularization_penalty(model,
+                                                      0.5,
+                                                      0.25,
+                                                      1,
+                                                      &penalty,
+                                                      &error) &&
+                  penalty == 8.125 &&
+                  neural_gradient_add_regularization(gradient,
+                                                     model,
+                                                     0.5,
+                                                     0.25,
+                                                     1,
+                                                     &error) &&
+                  gradient_biases[0] == 2.5,
+              "explicit bias regularization must affect penalty and gradient");
+        weights[1] = 3.0 + epsilon;
+        check(neural_model_set_layer_parameters(model,
+                                                0U,
+                                                weights,
+                                                2U,
+                                                biases,
+                                                1U,
+                                                &error) &&
+                  neural_model_regularization_penalty(model,
+                                                      0.5,
+                                                      0.25,
+                                                      0,
+                                                      &positive_penalty,
+                                                      &error),
+              "positive finite-difference penalty must evaluate");
+        weights[1] = 3.0 - epsilon;
+        check(neural_model_set_layer_parameters(model,
+                                                0U,
+                                                weights,
+                                                2U,
+                                                biases,
+                                                1U,
+                                                &error) &&
+                  neural_model_regularization_penalty(model,
+                                                      0.5,
+                                                      0.25,
+                                                      0,
+                                                      &negative_penalty,
+                                                      &error) &&
+                  fabs((positive_penalty - negative_penalty) /
+                           (2.0 * epsilon) -
+                       1.25) < 1e-9,
+              "regularization gradient must match a finite difference");
+        weights[1] = 3.0;
+        check(neural_model_set_layer_parameters(model,
+                                                0U,
+                                                weights,
+                                                2U,
+                                                biases,
+                                                1U,
+                                                &error),
+              "finite-difference fixture must restore model parameters");
+        check(fill_gradient(gradient, 1.0),
+              "transactional regularization fixture must reset");
+        gradient_biases[0] = DBL_MAX;
+        check(!neural_gradient_add_regularization(gradient,
+                                                  model,
+                                                  DBL_MAX,
+                                                  DBL_MAX,
+                                                  1,
+                                                  &error) &&
+                  gradient_weights[0] == 1.0 &&
+                  gradient_weights[1] == 1.0 &&
+                  gradient_biases[0] == DBL_MAX,
+              "overflowing regularization must leave the gradient unchanged");
+        check(!neural_model_regularization_penalty(model,
+                                                   -1.0,
+                                                   0.0,
+                                                   0,
+                                                   &penalty,
+                                                   &error),
+              "negative regularization coefficients must be rejected");
+    }
+    neural_gradient_free(gradient);
+    neural_model_free(model);
+}
+
 int main(void)
 {
     test_batch_plan();
@@ -521,6 +655,7 @@ int main(void)
     test_batch_accumulator();
     test_transactional_gradient_add();
     test_gradient_norm_and_clipping();
+    test_regularization();
 
     if (failures != 0) {
         fprintf(stderr, "%d batch test(s) failed\n", failures);

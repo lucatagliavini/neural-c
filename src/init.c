@@ -91,7 +91,10 @@ static int write_project(FILE *stream, const NeuralTrainingConfig *training)
                    "early_stopping_min_delta %.*g\n"
                    "batch_size %zu\n"
                    "shuffle %d\n"
-                   "gradient_clip_norm %.*g\n",
+                   "gradient_clip_norm %.*g\n"
+                   "l1_regularization %.*g\n"
+                   "l2_regularization %.*g\n"
+                   "regularize_biases %d\n",
                    NEURAL_FORMAT_MAGIC,
                    NEURAL_FORMAT_VERSION,
                    training->epochs,
@@ -106,7 +109,12 @@ static int write_project(FILE *stream, const NeuralTrainingConfig *training)
                    training->batch_size,
                    training->shuffle,
                    DBL_DECIMAL_DIG,
-                   training->gradient_clip_norm) >= 0;
+                   training->gradient_clip_norm,
+                   DBL_DECIMAL_DIG,
+                   training->l1_regularization,
+                   DBL_DECIMAL_DIG,
+                   training->l2_regularization,
+                   training->regularize_biases) >= 0;
 }
 
 static int write_dataset(FILE *stream, const NeuralModelSpec *model)

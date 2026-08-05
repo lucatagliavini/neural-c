@@ -386,6 +386,33 @@ int neural_training_config_validate(const NeuralTrainingConfig *config,
             "gradient_clip_norm must be finite and non-negative");
         return 0;
     }
+    if (!isfinite(config->l1_regularization) ||
+        config->l1_regularization < 0.0) {
+        neural_error_set(
+            error,
+            "l1_regularization must be finite and non-negative");
+        return 0;
+    }
+    if (!isfinite(config->l2_regularization) ||
+        config->l2_regularization < 0.0) {
+        neural_error_set(
+            error,
+            "l2_regularization must be finite and non-negative");
+        return 0;
+    }
+    if (config->regularize_biases != 0 &&
+        config->regularize_biases != 1) {
+        neural_error_set(error, "regularize_biases must be either 0 or 1");
+        return 0;
+    }
+    if (config->regularize_biases != 0 &&
+        config->l1_regularization == 0.0 &&
+        config->l2_regularization == 0.0) {
+        neural_error_set(
+            error,
+            "regularize_biases requires positive L1 or L2 regularization");
+        return 0;
+    }
     return 1;
 }
 
@@ -704,6 +731,9 @@ int neural_training_config_load(const char *path,
         FIELD_BATCH_SIZE = 128U,
         FIELD_SHUFFLE = 256U,
         FIELD_GRADIENT_CLIP_NORM = 512U,
+        FIELD_L1_REGULARIZATION = 1024U,
+        FIELD_L2_REGULARIZATION = 2048U,
+        FIELD_REGULARIZE_BIASES = 4096U,
         REQUIRED_FIELDS = FIELD_EPOCHS | FIELD_RATE | FIELD_SEED | FIELD_LOSS |
                           FIELD_CHECKPOINT_INTERVAL,
         EARLY_FIELDS = FIELD_EARLY_PATIENCE | FIELD_EARLY_MIN_DELTA
@@ -863,6 +893,46 @@ int neural_training_config_load(const char *path,
                     error,
                     "%s:%zu: gradient_clip_norm must be finite and "
                     "non-negative",
+                    path,
+                    line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "l1_regularization") == 0) {
+            field = FIELD_L1_REGULARIZATION;
+            if (!neural_parse_real(tokens.items[1],
+                                   &config->l1_regularization) ||
+                config->l1_regularization < 0.0) {
+                neural_error_set(
+                    error,
+                    "%s:%zu: l1_regularization must be finite and "
+                    "non-negative",
+                    path,
+                    line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "l2_regularization") == 0) {
+            field = FIELD_L2_REGULARIZATION;
+            if (!neural_parse_real(tokens.items[1],
+                                   &config->l2_regularization) ||
+                config->l2_regularization < 0.0) {
+                neural_error_set(
+                    error,
+                    "%s:%zu: l2_regularization must be finite and "
+                    "non-negative",
+                    path,
+                    line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "regularize_biases") == 0) {
+            field = FIELD_REGULARIZE_BIASES;
+            if (strcmp(tokens.items[1], "0") == 0) {
+                config->regularize_biases = 0;
+            } else if (strcmp(tokens.items[1], "1") == 0) {
+                config->regularize_biases = 1;
+            } else {
+                neural_error_set(
+                    error,
+                    "%s:%zu: regularize_biases must be either 0 or 1",
                     path,
                     line_number);
                 goto cleanup;

@@ -13,6 +13,7 @@
 #include "neural/defaults.h"
 #include "neural/digest.h"
 #include "neural/evaluation.h"
+#include "neural/gradient.h"
 #include "neural/model.h"
 #include "neural/persistence.h"
 #include "neural/project.h"
@@ -45,6 +46,31 @@ typedef struct {
     NeuralEpochObserver observer;
     void *observer_context;
 } NeuralEarlyStoppingObserver;
+
+static int model_objective(const NeuralModel *model,
+                           const NeuralTrainingConfig *training,
+                           neural_real loss,
+                           neural_real *objective,
+                           NeuralError *error)
+{
+    neural_real penalty;
+
+    if (!neural_model_regularization_penalty(
+            model,
+            training->l1_regularization,
+            training->l2_regularization,
+            training->regularize_biases,
+            &penalty,
+            error) ||
+        !isfinite(loss + penalty)) {
+        if (error != NULL && error->message[0] == '\0') {
+            neural_error_set(error, "training objective is not finite");
+        }
+        return 0;
+    }
+    *objective = loss + penalty;
+    return 1;
+}
 
 static int copy_model_parameters(NeuralModel *destination,
                                  const NeuralModel *source,
@@ -252,7 +278,7 @@ static int train_early_stopping_range(
 {
     NeuralEarlyStoppingObserver observer;
     NeuralWeightsMetadata weights = {0};
-    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0U};
+    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0.0, 0U};
     int initialized = 0;
     int success = 0;
 
@@ -322,6 +348,11 @@ static int train_early_stopping_range(
                                             project->training.loss,
                                             &completed.final_loss,
                                             error) ||
+        !model_objective(current_model,
+                         &project->training,
+                         completed.final_loss,
+                         &completed.final_objective,
+                         error) ||
         !neural_early_weights_save_atomic(weights_path,
                                           current_model,
                                           &weights,
@@ -459,7 +490,7 @@ int neural_project_train_fresh_controlled(
         &checkpoint_observer, observer, observer_context
     };
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
-    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0U};
+    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0.0, 0U};
     char *weights_path = NULL;
     char *checkpoint_path = NULL;
     int project_loaded = 0;
@@ -614,7 +645,7 @@ int neural_project_train_resume_controlled(
         &checkpoint_observer, observer, observer_context
     };
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
-    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0U};
+    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0.0, 0U};
     NeuralModel *checkpoint_model = NULL;
     NeuralModel *best_model = NULL;
     NeuralModel *weights_model = NULL;
@@ -908,7 +939,7 @@ int neural_project_train_additional_controlled(
         &checkpoint_observer, observer, observer_context
     };
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
-    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0U};
+    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0.0, 0U};
     NeuralModel *model = NULL;
     NeuralModel *best_model = NULL;
     char *weights_path = NULL;

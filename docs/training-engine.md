@@ -78,6 +78,38 @@ start of a resumed range. For every Fisher-Yates bound `b`, draws below
 without architecture-specific integer extensions. The local stream neither
 reads nor changes the model initialization RNG state.
 
+## Regularization Objective
+
+`l1_regularization` and `l2_regularization` are optional finite non-negative
+training-owned coefficients in `project.conf`. Their defaults, including an
+absent legacy property, are zero. `init --l1 V` and `init --l2 V` materialize
+them. `regularize_biases` is zero or one; zero excludes every bias and is the
+default, while `init --regularize-biases` includes biases and requires at least
+one positive coefficient.
+
+For model parameters `theta`, the objective associated with a data loss is:
+
+```text
+objective = mean_data_loss
+          + l1_regularization * sum(abs(theta))
+          + (l2_regularization / 2) * sum(theta * theta)
+```
+
+The sums traverse each layer's weights followed, only when enabled, by its
+biases. The L1 subgradient is `-1`, `0`, or `1` for negative, zero, or positive
+parameters. The L2 gradient is `l2_regularization * theta`; the factor one half
+therefore does not appear in the gradient. Penalty accumulation is
+Neumaier-compensated and all products, sums, and gradient changes are checked
+before mutation. Adding regularization to a gradient is transactional.
+
+Every batch adds the same model penalty gradient to its finalized mean data
+gradient. Reported `loss` remains the mean configured data loss of the coherent
+post-epoch model. Reported `objective` is that loss plus the same model's
+regularization penalty. Validation and test loss remain data-only metrics;
+early stopping selects by validation data loss, never by the training
+objective. Zero coefficients preserve prior update arithmetic exactly and make
+`objective` equal `loss`.
+
 ## Gradient Norm and Clipping
 
 `gradient_clip_norm` is optional training-owned configuration in
@@ -100,12 +132,11 @@ contains the maximum pre-clipping batch norm observed in that epoch and the
 number of clipped batches. The final training result contains the same values
 for its last completed epoch.
 
-The complete update order is: deterministic sample reduction and mean, future
+The complete update order is: deterministic sample reduction and mean,
 regularization contribution, norm measurement, clipping, future optimizer
-transformation, then the exclusive model update. Thus Milestone 9.5 must add L1
-or L2 terms before norm measurement, and Milestone 10 optimizers must consume
-the already clipped gradient. Worker threads never calculate norms, clip, or
-update parameters.
+transformation, then the exclusive model update. Milestone 10 optimizers must
+consume the already clipped gradient. Worker threads never add regularization,
+calculate norms, clip, or update parameters.
 
 ## Parallel Execution
 
