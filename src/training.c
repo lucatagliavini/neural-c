@@ -7,6 +7,7 @@
 #include "neural/batch.h"
 #include "neural/evaluation.h"
 #include "neural/gradient.h"
+#include "neural/optimizer.h"
 
 static int training_objective(const NeuralModel *model,
                               const NeuralTrainingConfig *training,
@@ -80,11 +81,30 @@ const char *neural_training_mode_name(NeuralTrainingMode mode)
     return "unknown";
 }
 
-int neural_model_train_range(
+const char *neural_training_completion_reason_name(
+    NeuralTrainingCompletionReason reason)
+{
+    switch (reason) {
+    case NEURAL_TRAINING_IN_PROGRESS:
+        return "in_progress";
+    case NEURAL_TRAINING_TARGET_EPOCHS:
+        return "target_epochs";
+    case NEURAL_TRAINING_LOSS_TARGET:
+        return "loss_target";
+    case NEURAL_TRAINING_NO_IMPROVEMENT:
+        return "no_improvement";
+    case NEURAL_TRAINING_EARLY_STOPPING:
+        return "early_stopping";
+    }
+    return "unknown";
+}
+
+static int train_range(
     NeuralModel *model,
     const NeuralDataset *dataset,
     const NeuralTrainingConfig *training,
     const NeuralExecutionConfig *execution,
+    NeuralOptimizer *provided_optimizer,
     size_t completed_epochs,
     size_t target_epochs,
     NeuralEpochObserver observer,
@@ -95,13 +115,16 @@ int neural_model_train_range(
     NeuralParallelExecutor *executor = NULL;
     NeuralSampleOrder *sample_order = NULL;
     NeuralGradient *update_buffer = NULL;
+    NeuralOptimizer *optimizer = NULL;
     NeuralWorkspace *evaluation_workspace = NULL;
     neural_real *predicted = NULL;
-    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0.0, 0U};
+    NeuralTrainingResult completed = {0};
     NeuralBatchPlan batch_plan;
+    NeuralOptimizerOptions optimizer_options;
     size_t output_count;
     size_t epoch_index;
     int success = 0;
+    int owns_optimizer = 0;
 
     neural_error_clear(error);
     if (result == NULL || model == NULL || dataset == NULL ||
@@ -114,6 +137,27 @@ int neural_model_train_range(
         neural_error_set(error, "training epoch range is invalid");
         return 0;
     }
+    optimizer_options.kind = training->optimizer;
+    optimizer_options.momentum = training->momentum;
+    optimizer_options.adam_beta1 = training->adam_beta1;
+    optimizer_options.adam_beta2 = training->adam_beta2;
+    optimizer_options.adam_epsilon = training->adam_epsilon;
+    optimizer_options.learning_rate = training->learning_rate;
+    optimizer_options.schedule = training->learning_rate_schedule;
+    optimizer_options.schedule_decay = training->learning_rate_decay;
+    optimizer_options.schedule_step_epochs =
+        training->learning_rate_step_epochs;
+    optimizer_options.schedule_plateau_patience =
+        training->learning_rate_plateau_patience;
+    optimizer_options.schedule_plateau_min_delta =
+        training->learning_rate_plateau_min_delta;
+    optimizer_options.divergence_threshold = training->divergence_threshold;
+    optimizer_options.target_loss = training->target_loss;
+    optimizer_options.no_improvement_epochs =
+        training->max_no_improvement_epochs;
+    optimizer_options.no_improvement_min_delta =
+        training->no_improvement_min_delta;
+    optimizer = provided_optimizer;
     if (!neural_training_config_validate(training, error) ||
         !neural_parallel_executor_create(model,
                                          dataset,
@@ -125,6 +169,19 @@ int neural_model_train_range(
                                     &sample_order,
                                     error) ||
         !neural_workspace_create(model, &evaluation_workspace, error)) {
+        goto cleanup;
+    }
+    if (optimizer == NULL) {
+        if (!neural_optimizer_create(model,
+                                     &optimizer_options,
+                                     &optimizer,
+                                     error)) {
+            goto cleanup;
+        }
+        owns_optimizer = 1;
+    } else if (neural_optimizer_kind(optimizer) != training->optimizer) {
+        neural_error_set(error,
+                         "provided optimizer does not match training configuration");
         goto cleanup;
     }
     if (!neural_batch_plan_create(
@@ -155,7 +212,9 @@ int neural_model_train_range(
     }
     completed.worker_count =
         neural_parallel_executor_worker_count(executor);
-    if (completed_epochs == target_epochs) {
+    if (completed_epochs == target_epochs ||
+        neural_optimizer_convergence_reason(optimizer) !=
+            NEURAL_CONVERGENCE_NONE) {
         if (!neural_model_evaluate_dataset_loss(model,
                                    evaluation_workspace,
                                    predicted,
@@ -171,6 +230,14 @@ int neural_model_train_range(
             goto cleanup;
         }
         completed.completed_epochs = completed_epochs;
+        if (completed_epochs == target_epochs) {
+            completed.completion_reason = NEURAL_TRAINING_TARGET_EPOCHS;
+        } else if (neural_optimizer_convergence_reason(optimizer) ==
+                   NEURAL_CONVERGENCE_LOSS_TARGET) {
+            completed.completion_reason = NEURAL_TRAINING_LOSS_TARGET;
+        } else {
+            completed.completion_reason = NEURAL_TRAINING_NO_IMPROVEMENT;
+        }
         *result = completed;
         success = 1;
         goto cleanup;
@@ -178,6 +245,9 @@ int neural_model_train_range(
     for (epoch_index = completed_epochs; epoch_index < target_epochs;) {
         NeuralEpochReport report = {0};
         size_t batch_index;
+
+        report.learning_rate =
+            neural_optimizer_current_learning_rate(optimizer);
 
         if (!neural_sample_order_prepare(sample_order,
                                          training->seed,
@@ -250,10 +320,11 @@ int neural_model_train_range(
             if (clipped) {
                 report.clipped_batch_count++;
             }
-            if (!neural_model_apply_gradient(model,
-                                             update_gradient,
-                                             training->learning_rate,
-                                             error)) {
+            if (!neural_optimizer_step(optimizer,
+                                       model,
+                                       update_gradient,
+                                       report.learning_rate,
+                                       error)) {
                 goto cleanup;
             }
         }
@@ -271,8 +342,23 @@ int neural_model_train_range(
                                 error)) {
             goto cleanup;
         }
+        if (!neural_optimizer_observe_epoch(optimizer,
+                                            report.objective,
+                                            error)) {
+            goto cleanup;
+        }
+        if (epoch_index + 1U == target_epochs) {
+            report.completion_reason = NEURAL_TRAINING_TARGET_EPOCHS;
+        } else if (neural_optimizer_convergence_reason(optimizer) ==
+            NEURAL_CONVERGENCE_LOSS_TARGET) {
+            report.completion_reason = NEURAL_TRAINING_LOSS_TARGET;
+        } else if (neural_optimizer_convergence_reason(optimizer) ==
+                   NEURAL_CONVERGENCE_NO_IMPROVEMENT) {
+            report.completion_reason = NEURAL_TRAINING_NO_IMPROVEMENT;
+        }
         report.completed_epochs = epoch_index + 1U;
         report.target_epochs = target_epochs;
+        report.optimizer = optimizer;
         if (observer != NULL) {
             int observer_status = observer(&report, observer_context, error);
 
@@ -284,6 +370,8 @@ int neural_model_train_range(
                     report.max_gradient_norm;
                 completed.clipped_batch_count =
                     report.clipped_batch_count;
+                completed.completion_reason =
+                    NEURAL_TRAINING_EARLY_STOPPING;
                 epoch_index = report.completed_epochs;
                 break;
             }
@@ -301,7 +389,12 @@ int neural_model_train_range(
         completed.final_objective = report.objective;
         completed.final_max_gradient_norm = report.max_gradient_norm;
         completed.clipped_batch_count = report.clipped_batch_count;
+        completed.completion_reason = report.completion_reason;
         epoch_index = report.completed_epochs;
+        if (report.completion_reason == NEURAL_TRAINING_LOSS_TARGET ||
+            report.completion_reason == NEURAL_TRAINING_NO_IMPROVEMENT) {
+            break;
+        }
     }
     *result = completed;
     success = 1;
@@ -310,9 +403,67 @@ cleanup:
     free(predicted);
     neural_workspace_free(evaluation_workspace);
     neural_gradient_free(update_buffer);
+    if (owns_optimizer) {
+        neural_optimizer_free(optimizer);
+    }
     neural_sample_order_free(sample_order);
     neural_parallel_executor_free(executor);
     return success;
+}
+
+int neural_model_train_range(
+    NeuralModel *model,
+    const NeuralDataset *dataset,
+    const NeuralTrainingConfig *training,
+    const NeuralExecutionConfig *execution,
+    size_t completed_epochs,
+    size_t target_epochs,
+    NeuralEpochObserver observer,
+    void *observer_context,
+    NeuralTrainingResult *result,
+    NeuralError *error)
+{
+    return train_range(model,
+                       dataset,
+                       training,
+                       execution,
+                       NULL,
+                       completed_epochs,
+                       target_epochs,
+                       observer,
+                       observer_context,
+                       result,
+                       error);
+}
+
+int neural_model_train_range_with_optimizer(
+    NeuralModel *model,
+    const NeuralDataset *dataset,
+    const NeuralTrainingConfig *training,
+    const NeuralExecutionConfig *execution,
+    NeuralOptimizer *optimizer,
+    size_t completed_epochs,
+    size_t target_epochs,
+    NeuralEpochObserver observer,
+    void *observer_context,
+    NeuralTrainingResult *result,
+    NeuralError *error)
+{
+    if (optimizer == NULL) {
+        neural_error_set(error, "provided optimizer is required");
+        return 0;
+    }
+    return train_range(model,
+                       dataset,
+                       training,
+                       execution,
+                       optimizer,
+                       completed_epochs,
+                       target_epochs,
+                       observer,
+                       observer_context,
+                       result,
+                       error);
 }
 
 int neural_model_train(

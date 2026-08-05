@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "neural/defaults.h"
+#include "neural/gradient.h"
 #include "neural/parse.h"
 #include "neural/version.h"
 #include "atomic_file.h"
@@ -45,6 +46,7 @@ typedef struct {
     const NeuralModel *best_model;
     const NeuralWeightsMetadata *weights;
     const NeuralCheckpointMetadata *checkpoint;
+    const NeuralOptimizer *optimizer;
     int early_format;
 } PersistenceWriteRequest;
 
@@ -111,7 +113,7 @@ static int validate_metadata(enum persistence_kind kind,
                          "checkpoint epoch boundaries are invalid");
         return 0;
     }
-    if (checkpoint->optimizer != NEURAL_OPTIMIZER_GRADIENT_DESCENT) {
+    if (strcmp(neural_optimizer_name(checkpoint->optimizer), "unknown") == 0) {
         neural_error_set(error, "unknown checkpoint optimizer");
         return 0;
     }
@@ -166,11 +168,148 @@ static int write_payload(FILE *stream, const NeuralModel *model)
     return fputs("end\n", stream) != EOF;
 }
 
+static int write_gradient_payload(FILE *stream,
+                                  const NeuralModel *model,
+                                  const NeuralGradient *gradient)
+{
+    size_t layer_index;
+
+    if (gradient == NULL ||
+        !neural_gradient_is_compatible(gradient, model)) {
+        return 0;
+    }
+    for (layer_index = 0U;
+         layer_index < neural_model_layer_count(model);
+         layer_index++) {
+        const neural_real *weights;
+        const neural_real *biases;
+        size_t weight_count;
+        size_t bias_count;
+        size_t index;
+
+        weights = neural_gradient_layer_weights_const(
+            gradient, layer_index, &weight_count);
+        biases = neural_gradient_layer_biases_const(
+            gradient, layer_index, &bias_count);
+        if (weights == NULL || biases == NULL ||
+            fprintf(stream, "layer %zu\nweights\n", layer_index) < 0) {
+            return 0;
+        }
+        for (index = 0U; index < weight_count; index++) {
+            if (!isfinite(weights[index]) ||
+                fprintf(stream,
+                        "%.*g\n",
+                        DBL_DECIMAL_DIG,
+                        weights[index]) < 0) {
+                return 0;
+            }
+        }
+        if (fputs("biases\n", stream) == EOF) {
+            return 0;
+        }
+        for (index = 0U; index < bias_count; index++) {
+            if (!isfinite(biases[index]) ||
+                fprintf(stream,
+                        "%.*g\n",
+                        DBL_DECIMAL_DIG,
+                        biases[index]) < 0) {
+                return 0;
+            }
+        }
+        if (fputs("end_layer\n", stream) == EOF) {
+            return 0;
+        }
+    }
+    return fputs("end\n", stream) != EOF;
+}
+
+static int write_optimizer_state(FILE *stream,
+                                 const NeuralModel *model,
+                                 const NeuralOptimizer *optimizer)
+{
+    NeuralOptimizerKind kind = neural_optimizer_kind(optimizer);
+
+    if (!neural_optimizer_requires_checkpoint_state(optimizer)) {
+        return 0;
+    }
+    if (fprintf(
+            stream,
+            "optimizer_timestep %zu\n"
+            "learning_rate_schedule %s\n"
+            "schedule_completed_epochs %zu\n"
+            "schedule_current_rate %.*g\n"
+            "schedule_next_transition %zu\n"
+            "schedule_has_best %d\n"
+            "schedule_stale_epochs %zu\n",
+            neural_optimizer_timestep(optimizer),
+            neural_learning_rate_schedule_name(
+                neural_optimizer_schedule_kind(optimizer)),
+            neural_optimizer_schedule_completed_epochs(optimizer),
+            DBL_DECIMAL_DIG,
+            neural_optimizer_current_learning_rate(optimizer),
+            neural_optimizer_schedule_next_transition(optimizer),
+            neural_optimizer_schedule_has_best(optimizer),
+            neural_optimizer_schedule_stale_epochs(optimizer)) < 0) {
+        return 0;
+    }
+    if (neural_optimizer_schedule_has_best(optimizer) &&
+        fprintf(stream,
+                "schedule_best_metric %.*g\n",
+                DBL_DECIMAL_DIG,
+                neural_optimizer_schedule_best_metric(optimizer)) < 0) {
+        return 0;
+    }
+    if (fprintf(stream,
+                "convergence_has_best %d\n"
+                "convergence_stale_epochs %zu\n"
+                "convergence_reason %d\n",
+                neural_optimizer_convergence_has_best(optimizer),
+                neural_optimizer_convergence_stale_epochs(optimizer),
+                (int)neural_optimizer_convergence_reason(optimizer)) < 0) {
+        return 0;
+    }
+    if (neural_optimizer_convergence_has_best(optimizer) &&
+        fprintf(stream,
+                "convergence_best_loss %.*g\n",
+                DBL_DECIMAL_DIG,
+                neural_optimizer_convergence_best_loss(optimizer)) < 0) {
+        return 0;
+    }
+    if (kind == NEURAL_OPTIMIZER_ADAM &&
+        fprintf(stream,
+                "optimizer_beta1_power %.*g\n"
+                "optimizer_beta2_power %.*g\n",
+                DBL_DECIMAL_DIG,
+                neural_optimizer_beta1_power(optimizer),
+                DBL_DECIMAL_DIG,
+                neural_optimizer_beta2_power(optimizer)) < 0) {
+        return 0;
+    }
+    if (kind == NEURAL_OPTIMIZER_GRADIENT_DESCENT) {
+        return 1;
+    }
+    if (fputs("optimizer_state1\n", stream) == EOF ||
+        !write_gradient_payload(stream,
+                                model,
+                                neural_optimizer_state1(optimizer))) {
+        return 0;
+    }
+    if (kind == NEURAL_OPTIMIZER_ADAM &&
+        (fputs("optimizer_state2\n", stream) == EOF ||
+         !write_gradient_payload(stream,
+                                 model,
+                                 neural_optimizer_state2(optimizer)))) {
+        return 0;
+    }
+    return 1;
+}
+
 static int write_persistence(FILE *stream,
                              enum persistence_kind kind,
                              const NeuralModel *model,
                              const NeuralWeightsMetadata *weights,
-                             const NeuralCheckpointMetadata *checkpoint)
+                             const NeuralCheckpointMetadata *checkpoint,
+                             const NeuralOptimizer *optimizer)
 {
     const NeuralProjectDigests *digests =
         kind == PERSISTENCE_WEIGHTS ? &weights->digests : &checkpoint->digests;
@@ -178,11 +317,18 @@ static int write_persistence(FILE *stream,
                                   ? weights->completed_epochs
                                   : checkpoint->completed_epochs;
 
+    size_t format_version = kind == PERSISTENCE_CHECKPOINT &&
+                                    optimizer != NULL &&
+                                    neural_optimizer_requires_checkpoint_state(
+                                        optimizer)
+                                ? NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION
+                                : (size_t)NEURAL_FORMAT_VERSION;
+
     if (fprintf(stream,
-                "%s %s %d\n",
+                "%s %s %zu\n",
                 NEURAL_FORMAT_MAGIC,
                 persistence_kind_name(kind),
-                NEURAL_FORMAT_VERSION) < 0 ||
+                format_version) < 0 ||
         !write_digest(stream, "model_digest", digests->model) ||
         !write_digest(stream, "dataset_digest", digests->dataset) ||
         !write_digest(stream, "training_digest", digests->training) ||
@@ -192,10 +338,16 @@ static int write_persistence(FILE *stream,
     if (kind == PERSISTENCE_CHECKPOINT &&
         fprintf(stream,
                 "target_epochs %zu\n"
-                "optimizer gradient_descent\n"
+                "optimizer %s\n"
                 "rng_state %" PRIu64 "\n",
                 checkpoint->target_epochs,
+                neural_optimizer_name(checkpoint->optimizer),
                 checkpoint->rng_state) < 0) {
+        return 0;
+    }
+    if (format_version == NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION &&
+        (!write_optimizer_state(stream, model, optimizer) ||
+         fputs("model\n", stream) == EOF)) {
         return 0;
     }
     return write_payload(stream, model);
@@ -209,11 +361,18 @@ static int write_early_persistence(FILE *stream,
     size_t completed_epochs = request->kind == PERSISTENCE_WEIGHTS
         ? request->weights->completed_epochs
         : request->checkpoint->completed_epochs;
+    size_t format_version =
+        request->kind == PERSISTENCE_CHECKPOINT &&
+                request->optimizer != NULL &&
+                neural_optimizer_requires_checkpoint_state(request->optimizer)
+            ? NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION
+            : 2U;
 
     if (fprintf(stream,
-                "%s %s 2\n",
+                "%s %s %zu\n",
                 NEURAL_FORMAT_MAGIC,
-                persistence_kind_name(request->kind)) < 0 ||
+                persistence_kind_name(request->kind),
+                format_version) < 0 ||
         !write_digest(stream, "model_digest", digests->model) ||
         !write_digest(stream, "dataset_digest", digests->dataset) ||
         !write_digest(stream, "training_digest", digests->training) ||
@@ -221,9 +380,24 @@ static int write_early_persistence(FILE *stream,
         return 0;
     }
     if (request->kind == PERSISTENCE_WEIGHTS) {
-        const char *reason = request->weights->completion_reason ==
-                                     NEURAL_COMPLETION_EARLY_STOPPING
-                                 ? "early_stopping" : "target";
+        const char *reason;
+
+        switch (request->weights->completion_reason) {
+        case NEURAL_COMPLETION_TARGET:
+            reason = "target";
+            break;
+        case NEURAL_COMPLETION_EARLY_STOPPING:
+            reason = "early_stopping";
+            break;
+        case NEURAL_COMPLETION_LOSS_TARGET:
+            reason = "loss_target";
+            break;
+        case NEURAL_COMPLETION_NO_IMPROVEMENT:
+            reason = "no_improvement";
+            break;
+        default:
+            return 0;
+        }
 
         return fprintf(stream,
                        "selected_epoch %zu\n"
@@ -237,18 +411,23 @@ static int write_early_persistence(FILE *stream,
     if (request->best_model == NULL ||
         fprintf(stream,
                 "target_epochs %zu\n"
-                "optimizer gradient_descent\n"
+                "optimizer %s\n"
                 "rng_state %" PRIu64 "\n"
                 "best_epoch %zu\n"
                 "best_loss %.*g\n"
-                "stale_epochs %zu\n"
-                "current_model\n",
+                "stale_epochs %zu\n",
                 request->checkpoint->target_epochs,
+                neural_optimizer_name(request->checkpoint->optimizer),
                 request->checkpoint->rng_state,
                 request->checkpoint->best_epoch,
                 DBL_DECIMAL_DIG,
                 request->checkpoint->best_loss,
                 request->checkpoint->stale_epochs) < 0 ||
+        (format_version == NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION &&
+         !write_optimizer_state(stream,
+                                request->model,
+                                request->optimizer)) ||
+        fputs("current_model\n", stream) == EOF ||
         !write_payload(stream, request->model) ||
         fputs("best_model\n", stream) == EOF) {
         return 0;
@@ -289,7 +468,8 @@ static int write_with_c_locale(FILE *stream,
                                     request->kind,
                                     request->model,
                                     request->weights,
-                                    request->checkpoint);
+                                    request->checkpoint,
+                                    request->optimizer);
     }
     if (uselocale(previous_locale) == (locale_t)0) {
         neural_error_set(error,
@@ -313,6 +493,7 @@ static int save_atomic(const char *path,
                        const NeuralModel *model,
                        const NeuralWeightsMetadata *weights,
                        const NeuralCheckpointMetadata *checkpoint,
+                       const NeuralOptimizer *optimizer,
                        NeuralError *error)
 {
     PersistenceWriteRequest request;
@@ -331,12 +512,21 @@ static int save_atomic(const char *path,
                          "checkpoint RNG state does not match the runtime model");
         return 0;
     }
+    if (kind == PERSISTENCE_CHECKPOINT &&
+        checkpoint->optimizer != NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+        (optimizer == NULL ||
+         neural_optimizer_kind(optimizer) != checkpoint->optimizer)) {
+        neural_error_set(error,
+                         "checkpoint optimizer state does not match metadata");
+        return 0;
+    }
     request.path = path;
     request.kind = kind;
     request.model = model;
     request.best_model = NULL;
     request.weights = weights;
     request.checkpoint = checkpoint;
+    request.optimizer = optimizer;
     request.early_format = 0;
     return neural_atomic_file_write(path,
                                     write_with_c_locale,
@@ -549,7 +739,8 @@ static int parse_header(PersistenceReader *reader,
         strcmp(reader->tokens[0], NEURAL_FORMAT_MAGIC) != 0 ||
         strcmp(reader->tokens[1], persistence_kind_name(kind)) != 0 ||
         !neural_parse_size(reader->tokens[2], &version) ||
-        (version != (size_t)NEURAL_FORMAT_VERSION && version != 2U)) {
+        (version != (size_t)NEURAL_FORMAT_VERSION && version != 2U &&
+         version != NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION)) {
         neural_error_set(error,
                          "%s:%zu: expected '%s %s %d'",
                          reader->path,
@@ -597,7 +788,8 @@ static int parse_metadata(PersistenceReader *reader,
             !require_line(reader, 2U, "optimizer", error)) {
             return 0;
         }
-        if (strcmp(reader->tokens[1], "gradient_descent") != 0) {
+        if (!neural_optimizer_from_name(reader->tokens[1],
+                                        &checkpoint->optimizer)) {
             neural_error_set(error,
                              "%s:%zu: unknown optimizer '%s'",
                              reader->path,
@@ -605,7 +797,6 @@ static int parse_metadata(PersistenceReader *reader,
                              reader->tokens[1]);
             return 0;
         }
-        checkpoint->optimizer = NEURAL_OPTIMIZER_GRADIENT_DESCENT;
         if (!parse_uint64_line(reader,
                                "rng_state",
                                &checkpoint->rng_state,
@@ -629,6 +820,10 @@ static int parse_metadata(PersistenceReader *reader,
             weights->completion_reason = NEURAL_COMPLETION_TARGET;
         } else if (strcmp(reader->tokens[1], "early_stopping") == 0) {
             weights->completion_reason = NEURAL_COMPLETION_EARLY_STOPPING;
+        } else if (strcmp(reader->tokens[1], "loss_target") == 0) {
+            weights->completion_reason = NEURAL_COMPLETION_LOSS_TARGET;
+        } else if (strcmp(reader->tokens[1], "no_improvement") == 0) {
+            weights->completion_reason = NEURAL_COMPLETION_NO_IMPROVEMENT;
         } else {
             neural_error_set(error,
                              "%s:%zu: unknown completion reason '%s'",
@@ -644,11 +839,14 @@ static int parse_metadata(PersistenceReader *reader,
             weights->completed_epochs > weights->target_epochs ||
             (weights->completion_reason != NEURAL_COMPLETION_TARGET &&
              weights->completion_reason !=
-                 NEURAL_COMPLETION_EARLY_STOPPING) ||
+                 NEURAL_COMPLETION_EARLY_STOPPING &&
+             weights->completion_reason !=
+                 NEURAL_COMPLETION_LOSS_TARGET &&
+             weights->completion_reason !=
+                 NEURAL_COMPLETION_NO_IMPROVEMENT) ||
             (weights->completion_reason == NEURAL_COMPLETION_TARGET &&
              weights->completed_epochs != weights->target_epochs) ||
-            (weights->completion_reason ==
-                 NEURAL_COMPLETION_EARLY_STOPPING &&
+            (weights->completion_reason != NEURAL_COMPLETION_TARGET &&
              weights->completed_epochs >= weights->target_epochs)) {
             neural_error_set(error,
                              "%s:%zu: weights epoch boundaries are invalid",
@@ -662,6 +860,17 @@ static int parse_metadata(PersistenceReader *reader,
         weights->target_epochs = weights->completed_epochs;
         weights->completion_reason = NEURAL_COMPLETION_TARGET;
         weights->format_version = format_version;
+    }
+    if (kind == PERSISTENCE_CHECKPOINT) {
+        checkpoint->format_version = format_version;
+        if (format_version != NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION &&
+            checkpoint->optimizer != NEURAL_OPTIMIZER_GRADIENT_DESCENT) {
+            neural_error_set(error,
+                             "%s:%zu: stateful optimizer requires checkpoint version 3",
+                             reader->path,
+                             reader->line_number);
+            return 0;
+        }
     }
     {
         NeuralError metadata_error;
@@ -885,9 +1094,180 @@ static int apply_staging(NeuralModel *model,
     return 1;
 }
 
+static int staging_to_gradient(const NeuralModel *model,
+                               const ParameterStaging *staging,
+                               NeuralGradient *gradient,
+                               NeuralError *error)
+{
+    size_t layer_index;
+
+    if (staging == NULL || gradient == NULL ||
+        !neural_gradient_is_compatible(gradient, model)) {
+        neural_error_set(error, "optimizer staging is incompatible");
+        return 0;
+    }
+    for (layer_index = 0U; layer_index < staging->layer_count; layer_index++) {
+        size_t weight_count;
+        size_t bias_count;
+        neural_real *weights = neural_gradient_layer_weights(
+            gradient, layer_index, &weight_count);
+        neural_real *biases = neural_gradient_layer_biases(
+            gradient, layer_index, &bias_count);
+
+        memcpy(weights,
+               staging->weights[layer_index],
+               weight_count * sizeof(*weights));
+        memcpy(biases,
+               staging->biases[layer_index],
+               bias_count * sizeof(*biases));
+    }
+    return 1;
+}
+
+static int parse_optimizer_state(PersistenceReader *reader,
+                                 const NeuralModel *model,
+                                 NeuralOptimizerKind kind,
+                                 NeuralLearningRateScheduleKind expected_schedule,
+                                 size_t *timestep,
+                                 size_t *schedule_completed_epochs,
+                                 neural_real *schedule_current_rate,
+                                 size_t *schedule_next_transition,
+                                 int *schedule_has_best,
+                                 neural_real *schedule_best_metric,
+                                 size_t *schedule_stale_epochs,
+                                 int *convergence_has_best,
+                                 neural_real *convergence_best_loss,
+                                 size_t *convergence_stale_epochs,
+                                 NeuralConvergenceReason *convergence_reason,
+                                 neural_real *beta1_power,
+                                 neural_real *beta2_power,
+                                 ParameterStaging *state1,
+                                 ParameterStaging *state2,
+                                 NeuralError *error)
+{
+    NeuralLearningRateScheduleKind parsed_schedule;
+
+    if (!parse_size_line(reader,
+                         "optimizer_timestep",
+                         timestep,
+                         error)) {
+        return 0;
+    }
+    if (!require_line(reader, 2U, "learning_rate_schedule", error) ||
+        !neural_learning_rate_schedule_from_name(reader->tokens[1],
+                                                 &parsed_schedule) ||
+        parsed_schedule != expected_schedule ||
+        !parse_size_line(reader,
+                         "schedule_completed_epochs",
+                         schedule_completed_epochs,
+                         error) ||
+        !parse_real_line(reader,
+                         "schedule_current_rate",
+                         schedule_current_rate,
+                         error) ||
+        !parse_size_line(reader,
+                         "schedule_next_transition",
+                         schedule_next_transition,
+                         error) ||
+        !require_line(reader, 2U, "schedule_has_best", error)) {
+        return 0;
+    }
+    if (strcmp(reader->tokens[1], "0") == 0) {
+        *schedule_has_best = 0;
+    } else if (strcmp(reader->tokens[1], "1") == 0) {
+        *schedule_has_best = 1;
+    } else {
+        neural_error_set(error,
+                         "%s:%zu: schedule_has_best must be 0 or 1",
+                         reader->path,
+                         reader->line_number);
+        return 0;
+    }
+    if (!parse_size_line(reader,
+                         "schedule_stale_epochs",
+                         schedule_stale_epochs,
+                         error)) {
+        return 0;
+    }
+    *schedule_best_metric = 0.0;
+    if (*schedule_has_best &&
+        !parse_real_line(reader,
+                         "schedule_best_metric",
+                         schedule_best_metric,
+                         error)) {
+        return 0;
+    }
+    if (!require_line(reader, 2U, "convergence_has_best", error)) {
+        return 0;
+    }
+    if (strcmp(reader->tokens[1], "0") == 0) {
+        *convergence_has_best = 0;
+    } else if (strcmp(reader->tokens[1], "1") == 0) {
+        *convergence_has_best = 1;
+    } else {
+        neural_error_set(error,
+                         "%s:%zu: convergence_has_best must be 0 or 1",
+                         reader->path,
+                         reader->line_number);
+        return 0;
+    }
+    {
+        size_t parsed_reason;
+
+        if (!parse_size_line(reader,
+                             "convergence_stale_epochs",
+                             convergence_stale_epochs,
+                             error) ||
+            !parse_size_line(reader,
+                             "convergence_reason",
+                             &parsed_reason,
+                             error) ||
+            parsed_reason >
+                (size_t)NEURAL_CONVERGENCE_NO_IMPROVEMENT) {
+            return 0;
+        }
+        *convergence_reason = (NeuralConvergenceReason)parsed_reason;
+    }
+    *convergence_best_loss = 0.0;
+    if (*convergence_has_best &&
+        !parse_real_line(reader,
+                         "convergence_best_loss",
+                         convergence_best_loss,
+                         error)) {
+        return 0;
+    }
+    *beta1_power = 1.0;
+    *beta2_power = 1.0;
+    if (kind == NEURAL_OPTIMIZER_ADAM &&
+        (!parse_real_line(reader,
+                          "optimizer_beta1_power",
+                          beta1_power,
+                          error) ||
+         !parse_real_line(reader,
+                          "optimizer_beta2_power",
+                          beta2_power,
+                          error))) {
+        return 0;
+    }
+    if (kind == NEURAL_OPTIMIZER_GRADIENT_DESCENT) {
+        return 1;
+    }
+    if (!require_line(reader, 1U, "optimizer_state1", error) ||
+        !parse_payload(reader, model, state1, 0, error)) {
+        return 0;
+    }
+    if (kind == NEURAL_OPTIMIZER_ADAM &&
+        (!require_line(reader, 1U, "optimizer_state2", error) ||
+         !parse_payload(reader, model, state2, 0, error))) {
+        return 0;
+    }
+    return 1;
+}
+
 static int load_persistence(const char *path,
                             enum persistence_kind kind,
                             NeuralModel *model,
+                            NeuralOptimizer *optimizer,
                             const NeuralProjectDigests *expected_digests,
                             NeuralWeightsMetadata *weights,
                             NeuralCheckpointMetadata *checkpoint,
@@ -895,10 +1275,27 @@ static int load_persistence(const char *path,
 {
     PersistenceReader reader = {0};
     ParameterStaging staging;
+    ParameterStaging state1_staging = {0};
+    ParameterStaging state2_staging = {0};
+    NeuralGradient *state1 = NULL;
+    NeuralGradient *state2 = NULL;
     NeuralWeightsMetadata loaded_weights = {0};
     NeuralCheckpointMetadata loaded_checkpoint = {0};
     const NeuralProjectDigests *loaded_digests;
     size_t format_version = 0U;
+    size_t optimizer_timestep = 0U;
+    neural_real beta1_power = 1.0;
+    neural_real beta2_power = 1.0;
+    size_t schedule_completed_epochs = 0U;
+    neural_real schedule_current_rate = 0.0;
+    size_t schedule_next_transition = 0U;
+    int schedule_has_best = 0;
+    neural_real schedule_best_metric = 0.0;
+    size_t schedule_stale_epochs = 0U;
+    int convergence_has_best = 0;
+    neural_real convergence_best_loss = 0.0;
+    size_t convergence_stale_epochs = 0U;
+    NeuralConvergenceReason convergence_reason = NEURAL_CONVERGENCE_NONE;
     int success = 0;
 
     neural_error_clear(error);
@@ -922,12 +1319,17 @@ static int load_persistence(const char *path,
     if (!parse_header(&reader, kind, &format_version, error)) {
         goto cleanup;
     }
-    if (kind == PERSISTENCE_CHECKPOINT && format_version != 1U) {
+    if ((kind == PERSISTENCE_CHECKPOINT &&
+         format_version != 1U &&
+         format_version != NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION) ||
+        (kind == PERSISTENCE_WEIGHTS &&
+         format_version != 1U && format_version != 2U)) {
         neural_error_set(error,
-                         "%s:%zu: expected '%s checkpoint %d'",
+                         "%s:%zu: expected '%s %s %d'",
                          path,
                          reader.line_number,
                          NEURAL_FORMAT_MAGIC,
+                         persistence_kind_name(kind),
                          NEURAL_FORMAT_VERSION);
         goto cleanup;
     }
@@ -942,8 +1344,49 @@ static int load_persistence(const char *path,
     loaded_digests = kind == PERSISTENCE_WEIGHTS
                          ? &loaded_weights.digests
                          : &loaded_checkpoint.digests;
-    if (!verify_digests(path, loaded_digests, expected_digests, error) ||
-        !parse_payload(&reader, model, &staging, 1, error)) {
+    if (!verify_digests(path, loaded_digests, expected_digests, error)) {
+        goto cleanup;
+    }
+    if (kind == PERSISTENCE_CHECKPOINT &&
+        format_version == NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION) {
+        if (optimizer == NULL ||
+            neural_optimizer_kind(optimizer) != loaded_checkpoint.optimizer ||
+            (loaded_checkpoint.optimizer !=
+                 NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+             !staging_create(model, &state1_staging, error)) ||
+            (loaded_checkpoint.optimizer == NEURAL_OPTIMIZER_ADAM &&
+             !staging_create(model, &state2_staging, error)) ||
+            !parse_optimizer_state(&reader,
+                                   model,
+                                   loaded_checkpoint.optimizer,
+                                   neural_optimizer_schedule_kind(optimizer),
+                                   &optimizer_timestep,
+                                   &schedule_completed_epochs,
+                                   &schedule_current_rate,
+                                   &schedule_next_transition,
+                                   &schedule_has_best,
+                                   &schedule_best_metric,
+                                   &schedule_stale_epochs,
+                                   &convergence_has_best,
+                                   &convergence_best_loss,
+                                   &convergence_stale_epochs,
+                                   &convergence_reason,
+                                   &beta1_power,
+                                   &beta2_power,
+                                   &state1_staging,
+                                   &state2_staging,
+                                   error) ||
+            !require_line(&reader, 1U, "model", error)) {
+            goto cleanup;
+        }
+    } else if (kind == PERSISTENCE_CHECKPOINT && optimizer != NULL &&
+               neural_optimizer_requires_checkpoint_state(optimizer)) {
+        neural_error_set(error,
+                         "%s: checkpoint has no state for configured optimizer",
+                         path);
+        goto cleanup;
+    }
+    if (!parse_payload(&reader, model, &staging, 1, error)) {
         goto cleanup;
     }
     if (fclose(reader.stream) != 0) {
@@ -964,6 +1407,49 @@ static int load_persistence(const char *path,
                                        error)) {
         goto cleanup;
     }
+    if (kind == PERSISTENCE_CHECKPOINT &&
+        format_version == NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION) {
+        if ((loaded_checkpoint.optimizer !=
+                 NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+             (!neural_gradient_create(model, &state1, error) ||
+              !staging_to_gradient(model,
+                                   &state1_staging,
+                                   state1,
+                                   error))) ||
+            (loaded_checkpoint.optimizer == NEURAL_OPTIMIZER_ADAM &&
+             (!neural_gradient_create(model, &state2, error) ||
+              !staging_to_gradient(model,
+                                   &state2_staging,
+                                   state2,
+                                   error))) ||
+            (loaded_checkpoint.optimizer !=
+                 NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+             !neural_optimizer_restore(optimizer,
+                                       optimizer_timestep,
+                                       beta1_power,
+                                       beta2_power,
+                                       state1,
+                                       state2,
+                                       error)) ||
+            !neural_optimizer_restore_schedule(
+                optimizer,
+                schedule_completed_epochs,
+                schedule_current_rate,
+                schedule_next_transition,
+                schedule_has_best,
+                schedule_best_metric,
+                schedule_stale_epochs,
+                error) ||
+            !neural_optimizer_restore_convergence(
+                optimizer,
+                convergence_has_best,
+                convergence_best_loss,
+                convergence_stale_epochs,
+                convergence_reason,
+                error)) {
+            goto cleanup;
+        }
+    }
     if (kind == PERSISTENCE_WEIGHTS) {
         *weights = loaded_weights;
     } else {
@@ -977,6 +1463,10 @@ cleanup:
         (void)fclose(reader.stream);
     }
     staging_free(&staging);
+    staging_free(&state2_staging);
+    staging_free(&state1_staging);
+    neural_gradient_free(state2);
+    neural_gradient_free(state1);
     return success;
 }
 
@@ -990,6 +1480,7 @@ int neural_weights_save_atomic(const char *path,
                        model,
                        metadata,
                        NULL,
+                       NULL,
                        error);
 }
 
@@ -1002,6 +1493,7 @@ int neural_weights_load(const char *path,
     return load_persistence(path,
                             PERSISTENCE_WEIGHTS,
                             model,
+                            NULL,
                             expected_digests,
                             metadata,
                             NULL,
@@ -1018,6 +1510,23 @@ int neural_checkpoint_save_atomic(const char *path,
                        model,
                        NULL,
                        metadata,
+                       NULL,
+                       error);
+}
+
+int neural_checkpoint_save_atomic_with_optimizer(
+    const char *path,
+    const NeuralModel *model,
+    const NeuralOptimizer *optimizer,
+    const NeuralCheckpointMetadata *metadata,
+    NeuralError *error)
+{
+    return save_atomic(path,
+                       PERSISTENCE_CHECKPOINT,
+                       model,
+                       NULL,
+                       metadata,
+                       optimizer,
                        error);
 }
 
@@ -1030,6 +1539,25 @@ int neural_checkpoint_load(const char *path,
     return load_persistence(path,
                             PERSISTENCE_CHECKPOINT,
                             model,
+                            NULL,
+                            expected_digests,
+                            NULL,
+                            metadata,
+                            error);
+}
+
+int neural_checkpoint_load_with_optimizer(
+    const char *path,
+    NeuralModel *model,
+    NeuralOptimizer *optimizer,
+    const NeuralProjectDigests *expected_digests,
+    NeuralCheckpointMetadata *metadata,
+    NeuralError *error)
+{
+    return load_persistence(path,
+                            PERSISTENCE_CHECKPOINT,
+                            model,
+                            optimizer,
                             expected_digests,
                             NULL,
                             metadata,
@@ -1042,6 +1570,7 @@ static int save_early_atomic(const char *path,
                              const NeuralModel *best_model,
                              const NeuralWeightsMetadata *weights,
                              const NeuralCheckpointMetadata *checkpoint,
+                             const NeuralOptimizer *optimizer,
                              NeuralError *error)
 {
     PersistenceWriteRequest request;
@@ -1063,13 +1592,14 @@ static int save_early_atomic(const char *path,
             weights->completed_epochs > weights->target_epochs ||
             (weights->completion_reason == NEURAL_COMPLETION_TARGET &&
              weights->completed_epochs != weights->target_epochs) ||
-            (weights->completion_reason ==
-                 NEURAL_COMPLETION_EARLY_STOPPING &&
+            (weights->completion_reason != NEURAL_COMPLETION_TARGET &&
              weights->completed_epochs >= weights->target_epochs)) {
             neural_error_set(error, "early-stopping weights metadata is invalid");
             return 0;
         }
-    } else if (checkpoint->format_version != 2U ||
+    } else if ((checkpoint->format_version != 2U &&
+                checkpoint->format_version !=
+                    NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION) ||
                checkpoint->best_epoch == 0U ||
                checkpoint->best_epoch > checkpoint->completed_epochs ||
                checkpoint->stale_epochs > checkpoint->completed_epochs ||
@@ -1078,12 +1608,21 @@ static int save_early_atomic(const char *path,
         neural_error_set(error, "early-stopping checkpoint metadata is invalid");
         return 0;
     }
+    if (kind == PERSISTENCE_CHECKPOINT &&
+        checkpoint->optimizer != NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+        (optimizer == NULL ||
+         neural_optimizer_kind(optimizer) != checkpoint->optimizer)) {
+        neural_error_set(error,
+                         "early checkpoint optimizer state does not match metadata");
+        return 0;
+    }
     request.path = path;
     request.kind = kind;
     request.model = model;
     request.best_model = best_model;
     request.weights = weights;
     request.checkpoint = checkpoint;
+    request.optimizer = optimizer;
     request.early_format = 1;
     return neural_atomic_file_write(path, write_with_c_locale, &request, error);
 }
@@ -1099,6 +1638,7 @@ int neural_early_weights_save_atomic(
                              selected_model,
                              NULL,
                              metadata,
+                             NULL,
                              NULL,
                              error);
 }
@@ -1116,13 +1656,33 @@ int neural_early_checkpoint_save_atomic(
                              best_model,
                              NULL,
                              metadata,
+                             NULL,
                              error);
 }
 
-int neural_early_checkpoint_load(
+int neural_early_checkpoint_save_atomic_with_optimizer(
+    const char *path,
+    const NeuralModel *current_model,
+    const NeuralModel *best_model,
+    const NeuralOptimizer *optimizer,
+    const NeuralCheckpointMetadata *metadata,
+    NeuralError *error)
+{
+    return save_early_atomic(path,
+                             PERSISTENCE_CHECKPOINT,
+                             current_model,
+                             best_model,
+                             NULL,
+                             metadata,
+                             optimizer,
+                             error);
+}
+
+static int load_early_checkpoint(
     const char *path,
     NeuralModel *current_model,
     NeuralModel *best_model,
+    NeuralOptimizer *optimizer,
     const NeuralProjectDigests *expected_digests,
     NeuralCheckpointMetadata *metadata,
     NeuralError *error)
@@ -1130,9 +1690,26 @@ int neural_early_checkpoint_load(
     PersistenceReader reader = {0};
     ParameterStaging current_staging = {0};
     ParameterStaging best_staging = {0};
+    ParameterStaging state1_staging = {0};
+    ParameterStaging state2_staging = {0};
+    NeuralGradient *state1 = NULL;
+    NeuralGradient *state2 = NULL;
     NeuralWeightsMetadata unused_weights = {0};
     NeuralCheckpointMetadata loaded = {0};
     size_t format_version = 0U;
+    size_t optimizer_timestep = 0U;
+    neural_real beta1_power = 1.0;
+    neural_real beta2_power = 1.0;
+    size_t schedule_completed_epochs = 0U;
+    neural_real schedule_current_rate = 0.0;
+    size_t schedule_next_transition = 0U;
+    int schedule_has_best = 0;
+    neural_real schedule_best_metric = 0.0;
+    size_t schedule_stale_epochs = 0U;
+    int convergence_has_best = 0;
+    neural_real convergence_best_loss = 0.0;
+    size_t convergence_stale_epochs = 0U;
+    NeuralConvergenceReason convergence_reason = NEURAL_CONVERGENCE_NONE;
     int success = 0;
 
     neural_error_clear(error);
@@ -1153,7 +1730,8 @@ int neural_early_checkpoint_load(
                       PERSISTENCE_CHECKPOINT,
                       &format_version,
                       error) ||
-        format_version != 2U ||
+        (format_version != 2U &&
+         format_version != NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION) ||
         !parse_metadata(&reader,
                         PERSISTENCE_CHECKPOINT,
                         &unused_weights,
@@ -1163,8 +1741,46 @@ int neural_early_checkpoint_load(
         !parse_size_line(&reader, "best_epoch", &loaded.best_epoch, error) ||
         !parse_real_line(&reader, "best_loss", &loaded.best_loss, error) ||
         !parse_size_line(&reader, "stale_epochs", &loaded.stale_epochs, error) ||
-        !require_line(&reader, 1U, "current_model", error) ||
-        !verify_digests(path, &loaded.digests, expected_digests, error) ||
+        !verify_digests(path, &loaded.digests, expected_digests, error)) {
+        goto cleanup;
+    }
+    if (format_version == NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION) {
+        if (optimizer == NULL ||
+            neural_optimizer_kind(optimizer) != loaded.optimizer ||
+            (loaded.optimizer != NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+             !staging_create(current_model, &state1_staging, error)) ||
+            (loaded.optimizer == NEURAL_OPTIMIZER_ADAM &&
+             !staging_create(current_model, &state2_staging, error)) ||
+            !parse_optimizer_state(&reader,
+                                   current_model,
+                                   loaded.optimizer,
+                                   neural_optimizer_schedule_kind(optimizer),
+                                   &optimizer_timestep,
+                                   &schedule_completed_epochs,
+                                   &schedule_current_rate,
+                                   &schedule_next_transition,
+                                   &schedule_has_best,
+                                   &schedule_best_metric,
+                                   &schedule_stale_epochs,
+                                   &convergence_has_best,
+                                   &convergence_best_loss,
+                                   &convergence_stale_epochs,
+                                   &convergence_reason,
+                                   &beta1_power,
+                                   &beta2_power,
+                                   &state1_staging,
+                                   &state2_staging,
+                                   error)) {
+            goto cleanup;
+        }
+    } else if (optimizer != NULL &&
+               neural_optimizer_requires_checkpoint_state(optimizer)) {
+        neural_error_set(error,
+                         "%s: checkpoint has no state for configured optimizer",
+                         path);
+        goto cleanup;
+    }
+    if (!require_line(&reader, 1U, "current_model", error) ||
         !parse_payload(&reader,
                        current_model,
                        &current_staging,
@@ -1197,6 +1813,45 @@ int neural_early_checkpoint_load(
         }
         goto cleanup;
     }
+    if (format_version == NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION &&
+        ((loaded.optimizer != NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+          (!neural_gradient_create(current_model, &state1, error) ||
+           !staging_to_gradient(current_model,
+                                &state1_staging,
+                                state1,
+                                error))) ||
+         (loaded.optimizer == NEURAL_OPTIMIZER_ADAM &&
+          (!neural_gradient_create(current_model, &state2, error) ||
+           !staging_to_gradient(current_model,
+                                &state2_staging,
+                                state2,
+                                error))) ||
+         (loaded.optimizer != NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+          !neural_optimizer_restore(optimizer,
+                                    optimizer_timestep,
+                                    beta1_power,
+                                    beta2_power,
+                                    state1,
+                                    state2,
+                                    error)) ||
+         !neural_optimizer_restore_schedule(
+             optimizer,
+             schedule_completed_epochs,
+             schedule_current_rate,
+             schedule_next_transition,
+             schedule_has_best,
+             schedule_best_metric,
+             schedule_stale_epochs,
+             error) ||
+         !neural_optimizer_restore_convergence(
+             optimizer,
+             convergence_has_best,
+             convergence_best_loss,
+             convergence_stale_epochs,
+             convergence_reason,
+             error))) {
+        goto cleanup;
+    }
     *metadata = loaded;
     success = 1;
 
@@ -1207,5 +1862,44 @@ cleanup:
     }
     staging_free(&best_staging);
     staging_free(&current_staging);
+    staging_free(&state2_staging);
+    staging_free(&state1_staging);
+    neural_gradient_free(state2);
+    neural_gradient_free(state1);
     return success;
+}
+
+int neural_early_checkpoint_load(
+    const char *path,
+    NeuralModel *current_model,
+    NeuralModel *best_model,
+    const NeuralProjectDigests *expected_digests,
+    NeuralCheckpointMetadata *metadata,
+    NeuralError *error)
+{
+    return load_early_checkpoint(path,
+                                 current_model,
+                                 best_model,
+                                 NULL,
+                                 expected_digests,
+                                 metadata,
+                                 error);
+}
+
+int neural_early_checkpoint_load_with_optimizer(
+    const char *path,
+    NeuralModel *current_model,
+    NeuralModel *best_model,
+    NeuralOptimizer *optimizer,
+    const NeuralProjectDigests *expected_digests,
+    NeuralCheckpointMetadata *metadata,
+    NeuralError *error)
+{
+    return load_early_checkpoint(path,
+                                 current_model,
+                                 best_model,
+                                 optimizer,
+                                 expected_digests,
+                                 metadata,
+                                 error);
 }

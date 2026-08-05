@@ -133,10 +133,59 @@ number of clipped batches. The final training result contains the same values
 for its last completed epoch.
 
 The complete update order is: deterministic sample reduction and mean,
-regularization contribution, norm measurement, clipping, future optimizer
-transformation, then the exclusive model update. Milestone 10 optimizers must
-consume the already clipped gradient. Worker threads never add regularization,
-calculate norms, clip, or update parameters.
+regularization contribution, norm measurement, clipping, optimizer
+transformation, then the exclusive model update. The optimizer consumes the
+already clipped gradient. Worker threads never add regularization, calculate
+norms, clip, or update parameters.
+
+## Optimizer Boundary
+
+`optimizer` is training-owned configuration. An absent legacy property selects
+`gradient_descent`; new projects materialize that name. One optimizer object is
+created for each training invocation and is bound to the exact model it may
+update. Gradient descent delegates the finalized gradient and configured rate
+to the established transactional update, preserving the layer, weight, and
+bias traversal and therefore the previous result bit-for-bit.
+
+Momentum uses `v = coefficient * v + gradient` and applies `v`. Adam maintains
+first and second moments, multiplies persisted beta powers once per batch, and
+applies the bias-corrected `m / (sqrt(v) + epsilon)` direction. Candidates are
+computed in private buffers and checked before the model or live optimizer
+state changes. Failed or non-finite steps therefore change neither. Parameter
+and buffer traversal is layer order, weights then biases. Additional training
+creates fresh optimizer and schedule state; resume restores it from checkpoint
+version 3 and validates its identity before mutation.
+
+## Learning-Rate Schedules
+
+The base `learning_rate` and schedule configuration are training provenance.
+Constant preserves legacy arithmetic. Step multiplies the rate after each
+configured completed-epoch interval; exponential multiplies it after every
+completed epoch. Plateau observes coherent full training loss, resets its
+stale count only when improvement is strictly greater than `min_delta`, and
+multiplies the rate after `patience` stale observations. A transition affects
+the next epoch. Every candidate rate must remain finite and positive.
+
+Checkpoint version 3 owns the current rate, completed schedule epochs, next
+transition, plateau best/stale state, optimizer timestep and buffers. Resume
+therefore continues the same next update rather than recomputing approximate
+state from the epoch number.
+
+## Convergence Control
+
+After coherent epoch evaluation, an enabled divergence threshold fails the run
+when training loss is strictly above it; no new final weights are published.
+An enabled target stops successfully at or below its loss. The no-improvement
+limit records the best loss and counts epochs whose improvement is not strictly
+greater than its configured minimum delta. Reaching the limit is also a
+successful stop. Target-epoch completion takes precedence when both happen on
+the final configured epoch.
+
+Training results and CLI output distinguish `target_epochs`, `loss_target`,
+`no_improvement`, and `early_stopping`. Successful non-target final weights use
+version 2 and persist the reason and original target. Active convergence state
+is part of checkpoint version 3 so interruption and periodic resume preserve
+the exact decision sequence.
 
 ## Parallel Execution
 

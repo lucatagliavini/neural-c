@@ -22,6 +22,64 @@
 #include "project_checkpoint.h"
 #include "project_lock.h"
 
+static int create_training_optimizer(
+    const NeuralModel *model,
+    const NeuralTrainingConfig *training,
+    NeuralOptimizer **optimizer,
+    NeuralError *error)
+{
+    NeuralOptimizerOptions options;
+
+    options.kind = training->optimizer;
+    options.momentum = training->momentum;
+    options.adam_beta1 = training->adam_beta1;
+    options.adam_beta2 = training->adam_beta2;
+    options.adam_epsilon = training->adam_epsilon;
+    options.learning_rate = training->learning_rate;
+    options.schedule = training->learning_rate_schedule;
+    options.schedule_decay = training->learning_rate_decay;
+    options.schedule_step_epochs = training->learning_rate_step_epochs;
+    options.schedule_plateau_patience =
+        training->learning_rate_plateau_patience;
+    options.schedule_plateau_min_delta =
+        training->learning_rate_plateau_min_delta;
+    options.divergence_threshold = training->divergence_threshold;
+    options.target_loss = training->target_loss;
+    options.no_improvement_epochs = training->max_no_improvement_epochs;
+    options.no_improvement_min_delta = training->no_improvement_min_delta;
+    return neural_optimizer_create(model, &options, optimizer, error);
+}
+
+static int save_completed_weights(
+    const char *path,
+    const NeuralModel *model,
+    const NeuralProjectDigests *digests,
+    size_t target_epochs,
+    const NeuralTrainingResult *result,
+    NeuralError *error)
+{
+    NeuralWeightsMetadata metadata = {0};
+
+    metadata.completed_epochs = result->completed_epochs;
+    metadata.digests = *digests;
+    if (result->completion_reason == NEURAL_TRAINING_TARGET_EPOCHS) {
+        return neural_weights_save_atomic(path, model, &metadata, error);
+    }
+    metadata.selected_epoch = result->completed_epochs;
+    metadata.target_epochs = target_epochs;
+    metadata.format_version = 2U;
+    if (result->completion_reason == NEURAL_TRAINING_LOSS_TARGET) {
+        metadata.completion_reason = NEURAL_COMPLETION_LOSS_TARGET;
+    } else if (result->completion_reason ==
+               NEURAL_TRAINING_NO_IMPROVEMENT) {
+        metadata.completion_reason = NEURAL_COMPLETION_NO_IMPROVEMENT;
+    } else {
+        neural_error_set(error, "training completion reason is invalid");
+        return 0;
+    }
+    return neural_early_weights_save_atomic(path, model, &metadata, error);
+}
+
 typedef struct {
     NeuralProjectCheckpointObserver *checkpoint;
     NeuralEpochObserver observer;
@@ -165,10 +223,14 @@ static int observe_early_stopping(const NeuralEpochReport *report,
         observer->metadata.completed_epochs = report->completed_epochs;
         observer->metadata.rng_state =
             neural_model_random_state(observer->current_model);
-        if (!neural_early_checkpoint_save_atomic(
+        if ((observer->metadata.optimizer !=
+                 NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+             report->optimizer == NULL) ||
+            !neural_early_checkpoint_save_atomic_with_optimizer(
                 observer->checkpoint_path,
                 observer->current_model,
                 observer->best_model,
+                report->optimizer,
                 &observer->metadata,
                 error)) {
             return NEURAL_EPOCH_OBSERVER_ERROR;
@@ -222,7 +284,7 @@ static int initialize_early_observer(
     observer->observer = user_observer;
     observer->observer_context = user_context;
     observer->metadata.target_epochs = target_epochs;
-    observer->metadata.optimizer = NEURAL_OPTIMIZER_GRADIENT_DESCENT;
+    observer->metadata.optimizer = project->training.optimizer;
     observer->metadata.digests = *digests;
     observer->metadata.format_version = 2U;
     if (!neural_workspace_create(current_model,
@@ -263,6 +325,7 @@ static int train_early_stopping_range(
     const NeuralExecutionConfig *execution,
     NeuralModel *current_model,
     NeuralModel *best_model,
+    NeuralOptimizer *optimizer,
     const char *weights_path,
     const char *checkpoint_path,
     size_t completed_epochs,
@@ -278,7 +341,7 @@ static int train_early_stopping_range(
 {
     NeuralEarlyStoppingObserver observer;
     NeuralWeightsMetadata weights = {0};
-    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0.0, 0U};
+    NeuralTrainingResult completed = {0};
     int initialized = 0;
     int success = 0;
 
@@ -315,17 +378,30 @@ static int train_early_stopping_range(
         observer.metadata.stale_epochs = 0U;
         observer.has_best = 1;
     }
-    if (!neural_model_train_range(
-            current_model,
-            &project->dataset,
-            &project->training,
-            execution,
-            completed_epochs,
-            target_epochs,
-            observe_early_stopping,
-            &observer,
-            &completed,
-            error)) {
+    if ((optimizer == NULL &&
+         !neural_model_train_range(current_model,
+                                   &project->dataset,
+                                   &project->training,
+                                   execution,
+                                   completed_epochs,
+                                   target_epochs,
+                                   observe_early_stopping,
+                                   &observer,
+                                   &completed,
+                                   error)) ||
+        (optimizer != NULL &&
+         !neural_model_train_range_with_optimizer(
+             current_model,
+             &project->dataset,
+             &project->training,
+             execution,
+             optimizer,
+             completed_epochs,
+             target_epochs,
+             observe_early_stopping,
+             &observer,
+             &completed,
+             error))) {
         goto cleanup;
     }
     if (!observer.has_best) {
@@ -336,9 +412,17 @@ static int train_early_stopping_range(
     weights.digests = *digests;
     weights.selected_epoch = observer.metadata.best_epoch;
     weights.target_epochs = target_epochs;
-    weights.completion_reason = completed.completed_epochs < target_epochs
-                                    ? NEURAL_COMPLETION_EARLY_STOPPING
-                                    : NEURAL_COMPLETION_TARGET;
+    if (completed.completion_reason == NEURAL_TRAINING_TARGET_EPOCHS) {
+        weights.completion_reason = NEURAL_COMPLETION_TARGET;
+    } else if (completed.completion_reason ==
+               NEURAL_TRAINING_LOSS_TARGET) {
+        weights.completion_reason = NEURAL_COMPLETION_LOSS_TARGET;
+    } else if (completed.completion_reason ==
+               NEURAL_TRAINING_NO_IMPROVEMENT) {
+        weights.completion_reason = NEURAL_COMPLETION_NO_IMPROVEMENT;
+    } else {
+        weights.completion_reason = NEURAL_COMPLETION_EARLY_STOPPING;
+    }
     weights.format_version = 2U;
     if (!copy_model_parameters(current_model, best_model, error) ||
         !neural_model_evaluate_dataset_loss(current_model,
@@ -484,13 +568,12 @@ int neural_project_train_fresh_controlled(
     NeuralModel *model = NULL;
     NeuralModel *best_model = NULL;
     NeuralProjectDigests digests;
-    NeuralWeightsMetadata metadata;
     NeuralProjectCheckpointObserver checkpoint_observer = {0};
     NeuralProjectTrainingObserver training_observer = {
         &checkpoint_observer, observer, observer_context
     };
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
-    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0.0, 0U};
+    NeuralTrainingResult completed = {0};
     char *weights_path = NULL;
     char *checkpoint_path = NULL;
     int project_loaded = 0;
@@ -540,6 +623,7 @@ int neural_project_train_fresh_controlled(
                                         execution,
                                         model,
                                         best_model,
+                                        NULL,
                                         weights_path,
                                         checkpoint_path,
                                         0U,
@@ -563,6 +647,7 @@ int neural_project_train_fresh_controlled(
             checkpoint_path,
             model,
             &digests,
+            project.training.optimizer,
             project.training.checkpoint_interval,
             project.training.epochs,
             error)) {
@@ -583,12 +668,12 @@ int neural_project_train_fresh_controlled(
     if (!persistence_path_is_absent(weights_path, error)) {
         goto cleanup;
     }
-    metadata.completed_epochs = completed.completed_epochs;
-    metadata.digests = digests;
-    if (!neural_weights_save_atomic(weights_path,
-                                    model,
-                                    &metadata,
-                                    error) ||
+    if (!save_completed_weights(weights_path,
+                                model,
+                                &digests,
+                                project.training.epochs,
+                                &completed,
+                                error) ||
         !neural_atomic_file_remove(checkpoint_path, 1, error)) {
         goto cleanup;
     }
@@ -639,16 +724,16 @@ int neural_project_train_resume_controlled(
     NeuralProjectDigests digests;
     NeuralCheckpointMetadata checkpoint_metadata;
     NeuralWeightsMetadata weights_metadata;
-    NeuralWeightsMetadata final_metadata;
     NeuralProjectCheckpointObserver checkpoint_observer = {0};
     NeuralProjectTrainingObserver training_observer = {
         &checkpoint_observer, observer, observer_context
     };
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
-    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0.0, 0U};
+    NeuralTrainingResult completed = {0};
     NeuralModel *checkpoint_model = NULL;
     NeuralModel *best_model = NULL;
     NeuralModel *weights_model = NULL;
+    NeuralOptimizer *optimizer = NULL;
     char *weights_path = NULL;
     char *checkpoint_path = NULL;
     int checkpoint_exists = 0;
@@ -698,7 +783,11 @@ int neural_project_train_resume_controlled(
         !neural_model_create(&project.model,
                              project.training.seed,
                              &checkpoint_model,
-                             error)) {
+                             error) ||
+        !create_training_optimizer(checkpoint_model,
+                                   &project.training,
+                                   &optimizer,
+                                   error)) {
         goto cleanup;
     }
     if (project.training.early_stopping_patience != 0U) {
@@ -706,19 +795,30 @@ int neural_project_train_resume_controlled(
                                  project.training.seed,
                                  &best_model,
                                  error) ||
-            !neural_early_checkpoint_load(checkpoint_path,
-                                          checkpoint_model,
-                                          best_model,
-                                          &digests,
-                                          &checkpoint_metadata,
-                                          error)) {
+            !neural_early_checkpoint_load_with_optimizer(
+                checkpoint_path,
+                checkpoint_model,
+                best_model,
+                optimizer,
+                &digests,
+                &checkpoint_metadata,
+                error)) {
             goto cleanup;
         }
-    } else if (!neural_checkpoint_load(checkpoint_path,
-                                       checkpoint_model,
-                                       &digests,
-                                       &checkpoint_metadata,
-                                       error)) {
+    } else if (!neural_checkpoint_load_with_optimizer(
+                   checkpoint_path,
+                   checkpoint_model,
+                   optimizer,
+                   &digests,
+                   &checkpoint_metadata,
+                   error)) {
+        goto cleanup;
+    }
+    if (checkpoint_metadata.optimizer != project.training.optimizer) {
+        neural_error_set(error,
+                         "checkpoint optimizer '%s' does not match configured optimizer '%s'",
+                         neural_optimizer_name(checkpoint_metadata.optimizer),
+                         neural_optimizer_name(project.training.optimizer));
         goto cleanup;
     }
     if (!weights_exists &&
@@ -755,6 +855,7 @@ int neural_project_train_resume_controlled(
                 execution,
                 checkpoint_model,
                 best_model,
+                optimizer,
                 weights_path,
                 checkpoint_path,
                 checkpoint_metadata.completed_epochs,
@@ -854,6 +955,7 @@ int neural_project_train_resume_controlled(
             checkpoint_path,
             checkpoint_model,
             &digests,
+            project.training.optimizer,
             project.training.checkpoint_interval,
             checkpoint_metadata.target_epochs,
             error)) {
@@ -861,11 +963,12 @@ int neural_project_train_resume_controlled(
     }
     neural_project_checkpoint_observer_set_stop_request(&checkpoint_observer,
                                                         stop_request);
-    if (!neural_model_train_range(
+    if (!neural_model_train_range_with_optimizer(
             checkpoint_model,
             &project.dataset,
             &project.training,
             execution,
+            optimizer,
             checkpoint_metadata.completed_epochs,
             checkpoint_metadata.target_epochs,
             observe_project_training,
@@ -876,12 +979,12 @@ int neural_project_train_resume_controlled(
          !persistence_path_is_absent(weights_path, error))) {
         goto cleanup;
     }
-    final_metadata.completed_epochs = completed.completed_epochs;
-    final_metadata.digests = digests;
-    if (!neural_weights_save_atomic(weights_path,
-                                    checkpoint_model,
-                                    &final_metadata,
-                                    error) ||
+    if (!save_completed_weights(weights_path,
+                                checkpoint_model,
+                                &digests,
+                                checkpoint_metadata.target_epochs,
+                                &completed,
+                                error) ||
         !neural_atomic_file_remove(checkpoint_path, 0, error)) {
         goto cleanup;
     }
@@ -895,6 +998,7 @@ cleanup:
     neural_project_lock_release(&project_lock);
     neural_model_free(best_model);
     neural_model_free(weights_model);
+    neural_optimizer_free(optimizer);
     neural_model_free(checkpoint_model);
     if (project_loaded) {
         neural_project_free(&project);
@@ -933,13 +1037,12 @@ int neural_project_train_additional_controlled(
     NeuralProject project;
     NeuralProjectDigests digests;
     NeuralWeightsMetadata weights_metadata;
-    NeuralWeightsMetadata final_metadata;
     NeuralProjectCheckpointObserver checkpoint_observer = {0};
     NeuralProjectTrainingObserver training_observer = {
         &checkpoint_observer, observer, observer_context
     };
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
-    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0.0, 0U};
+    NeuralTrainingResult completed = {0};
     NeuralModel *model = NULL;
     NeuralModel *best_model = NULL;
     char *weights_path = NULL;
@@ -1030,6 +1133,7 @@ int neural_project_train_additional_controlled(
                 execution,
                 model,
                 best_model,
+                NULL,
                 weights_path,
                 checkpoint_path,
                 weights_metadata.completed_epochs,
@@ -1053,6 +1157,7 @@ int neural_project_train_additional_controlled(
             checkpoint_path,
             model,
             &digests,
+            project.training.optimizer,
             project.training.checkpoint_interval,
             target_epochs,
             error)) {
@@ -1073,12 +1178,12 @@ int neural_project_train_additional_controlled(
             error)) {
         goto cleanup;
     }
-    final_metadata.completed_epochs = completed.completed_epochs;
-    final_metadata.digests = digests;
-    if (!neural_weights_save_atomic(weights_path,
-                                    model,
-                                    &final_metadata,
-                                    error) ||
+    if (!save_completed_weights(weights_path,
+                                model,
+                                &digests,
+                                target_epochs,
+                                &completed,
+                                error) ||
         !neural_atomic_file_remove(checkpoint_path, 1, error)) {
         goto cleanup;
     }

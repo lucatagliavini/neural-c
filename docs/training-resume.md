@@ -157,6 +157,17 @@ with its bias policy. It needs no checkpoint field: every batch derives its
 penalty gradient from the coherent model at that update boundary. Resume and
 continuous execution therefore reproduce the same terms, objective, clipping
 decision, and model update without mutable regularization state.
+The project optimizer identity must equal the checkpoint `optimizer` field.
+Stateless gradient descent with a constant schedule continues to use the legacy
+payload. Momentum, Adam, non-constant schedules, and enabled convergence
+controls use checkpoint version 3. It atomically retains optimizer timestep and
+buffers, Adam correction powers, current/next schedule state, and convergence
+best/stale state. Resume installs those values with the model before executing
+another batch. Additional training intentionally starts fresh run state.
+
+A checkpoint already carrying a successful convergence reason represents an
+interrupted finalization boundary. Resume evaluates the restored coherent model
+and publishes version 2 final weights without performing another epoch.
 
 ## Checkpoint Lifecycle
 

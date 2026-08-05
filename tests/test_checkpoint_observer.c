@@ -160,6 +160,7 @@ static void test_interval_boundaries_and_payload(void)
                    path,
                    model,
                    &digests,
+                   NEURAL_OPTIMIZER_GRADIENT_DESCENT,
                    2U,
                    5U,
                    &error);
@@ -205,6 +206,7 @@ static void test_interval_boundaries_and_payload(void)
                   comparison_path,
                   model,
                   &digests,
+                  NEURAL_OPTIMIZER_GRADIENT_DESCENT,
                   2U,
                   5U,
                   &error) &&
@@ -220,6 +222,7 @@ static void test_interval_boundaries_and_payload(void)
                   disabled_path,
                   model,
                   &digests,
+                  NEURAL_OPTIMIZER_GRADIENT_DESCENT,
                   0U,
                   5U,
                   &error) &&
@@ -299,6 +302,7 @@ static void test_write_failure_preserves_prior_checkpoint(void)
                    path,
                    model,
                    &digests,
+                   NEURAL_OPTIMIZER_GRADIENT_DESCENT,
                    2U,
                    4U,
                    &error) &&
@@ -363,6 +367,7 @@ static void test_payload_is_deterministic_across_workers(void)
                        serial_path,
                        serial_model,
                        &digests,
+                       project.training.optimizer,
                        project.training.checkpoint_interval,
                        project.training.epochs,
                        &error) &&
@@ -371,6 +376,7 @@ static void test_payload_is_deterministic_across_workers(void)
                        parallel_path,
                        parallel_model,
                        &digests,
+                       project.training.optimizer,
                        project.training.checkpoint_interval,
                        project.training.epochs,
                        &error);

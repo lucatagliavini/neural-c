@@ -8,6 +8,7 @@ training_dir="build/tests/cli-training-project"
 interrupt_dir="build/tests/cli-interrupt-project"
 early_dir="build/tests/cli-early-project"
 import_dir="build/tests/cli-import-project"
+convergence_dir="build/tests/cli-convergence-project"
 
 cleanup() {
     rm -f -- \
@@ -18,6 +19,14 @@ cleanup() {
         "$project_dir/checkpoint.txt" \
         "$project_dir/.neural-c.lock"
     rmdir -- "$project_dir" 2>/dev/null || true
+    rm -f -- \
+        "$convergence_dir/model.txt" \
+        "$convergence_dir/project.conf" \
+        "$convergence_dir/train.txt" \
+        "$convergence_dir/weights.txt" \
+        "$convergence_dir/checkpoint.txt" \
+        "$convergence_dir/.neural-c.lock"
+    rmdir -- "$convergence_dir" 2>/dev/null || true
     rm -f -- \
         "$training_dir/model.txt" \
         "$training_dir/project.conf" \
@@ -117,6 +126,28 @@ grep -q 'requires positive L1 or L2 regularization' \
     <<<"$invalid_regularization_output"
 [[ ! -e $project_dir ]]
 
+set +e
+invalid_optimizer_output=$(
+    "$executable" init "$project_dir" --inputs 1 --layer 1:linear \
+        --optimizer rmsprop 2>&1
+)
+invalid_optimizer_status=$?
+set -e
+[[ $invalid_optimizer_status -eq 2 ]]
+grep -q "unsupported optimizer 'rmsprop'" <<<"$invalid_optimizer_output"
+[[ ! -e $project_dir ]]
+
+"$executable" init "$convergence_dir" \
+    --inputs 1 --layer 1:linear --epochs 10 --checkpoint-interval 0 \
+    --target-loss 1000000000
+printf '1 -> 0\n' >>"$convergence_dir/train.txt"
+convergence_output=$("$executable" train "$convergence_dir")
+grep -q '^Training complete: 1 epochs, loss ' <<<"$convergence_output"
+grep -q '^Training completion reason: loss_target$' \
+    <<<"$convergence_output"
+grep -q '^neural-c weights 2$' "$convergence_dir/weights.txt"
+grep -q '^completion loss_target$' "$convergence_dir/weights.txt"
+
 "$executable" init "$project_dir" \
     --inputs 3 \
     --layer 4:leaky_relu:alpha=0.01 \
@@ -130,6 +161,17 @@ grep -q 'requires positive L1 or L2 regularization' \
     --l1 0.125 \
     --l2 0.25 \
     --regularize-biases \
+    --optimizer adam \
+    --adam-beta1 0.8 \
+    --adam-beta2 0.99 \
+    --adam-epsilon 1e-7 \
+    --lr-schedule step \
+    --lr-decay 0.5 \
+    --lr-step-epochs 10 \
+    --divergence-threshold 100 \
+    --target-loss 0.01 \
+    --max-no-improvement-epochs 5 \
+    --no-improvement-min-delta 0.001 \
     --shuffle
 
 grep -q '^input 3$' "$project_dir/model.txt"
@@ -143,6 +185,17 @@ grep -q '^gradient_clip_norm 0.75$' "$project_dir/project.conf"
 grep -q '^l1_regularization 0.125$' "$project_dir/project.conf"
 grep -q '^l2_regularization 0.25$' "$project_dir/project.conf"
 grep -q '^regularize_biases 1$' "$project_dir/project.conf"
+grep -q '^optimizer adam$' "$project_dir/project.conf"
+grep -q '^adam_beta1 0.80000000000000004$' "$project_dir/project.conf"
+grep -q '^adam_beta2 0.98999999999999999$' "$project_dir/project.conf"
+grep -q '^adam_epsilon 9.9999999999999995e-08$' "$project_dir/project.conf"
+grep -q '^learning_rate_schedule step$' "$project_dir/project.conf"
+grep -q '^learning_rate_decay 0.5$' "$project_dir/project.conf"
+grep -q '^learning_rate_step_epochs 10$' "$project_dir/project.conf"
+grep -q '^divergence_threshold 100$' "$project_dir/project.conf"
+grep -q '^target_loss 0.01$' "$project_dir/project.conf"
+grep -q '^max_no_improvement_epochs 5$' "$project_dir/project.conf"
+grep -q '^no_improvement_min_delta 0.001$' "$project_dir/project.conf"
 printf '0 0 0 -> 0 0\n' >>"$project_dir/train.txt"
 configured_inspect=$("$executable" inspect "$project_dir")
 grep -q '^Batch size: 3$' <<<"$configured_inspect"
@@ -151,6 +204,18 @@ grep -q '^Gradient clip norm: 0.75$' <<<"$configured_inspect"
 grep -q '^L1 regularization: 0.125$' <<<"$configured_inspect"
 grep -q '^L2 regularization: 0.25$' <<<"$configured_inspect"
 grep -q '^Regularize biases: enabled$' <<<"$configured_inspect"
+grep -q '^Optimizer: adam (abstraction version 1)$' \
+    <<<"$configured_inspect"
+grep -q '^Adam beta1: 0.80000000000000004$' <<<"$configured_inspect"
+grep -q '^Adam beta2: 0.98999999999999999$' <<<"$configured_inspect"
+grep -q '^Adam epsilon: 9.9999999999999995e-08$' <<<"$configured_inspect"
+grep -q '^Learning-rate schedule: step$' <<<"$configured_inspect"
+grep -q '^Learning-rate decay: 0.5$' <<<"$configured_inspect"
+grep -q '^Learning-rate step epochs: 10$' <<<"$configured_inspect"
+grep -q '^Divergence threshold: 100$' <<<"$configured_inspect"
+grep -q '^Target loss: 0.01$' <<<"$configured_inspect"
+grep -q '^Maximum no-improvement epochs: 5$' <<<"$configured_inspect"
+grep -q '^No-improvement min delta: 0.001$' <<<"$configured_inspect"
 
 if "$executable" init "$project_dir" --inputs 1 --layer 1:sigmoid; then
     echo "init unexpectedly overwrote an existing project" >&2
@@ -169,6 +234,12 @@ grep -q '^gradient_clip_norm 0$' "$project_dir/project.conf"
 grep -q '^l1_regularization 0$' "$project_dir/project.conf"
 grep -q '^l2_regularization 0$' "$project_dir/project.conf"
 grep -q '^regularize_biases 0$' "$project_dir/project.conf"
+grep -q '^optimizer gradient_descent$' "$project_dir/project.conf"
+grep -q '^learning_rate_schedule constant$' "$project_dir/project.conf"
+grep -q '^divergence_threshold 0$' "$project_dir/project.conf"
+grep -q '^target_loss -1$' "$project_dir/project.conf"
+grep -q '^max_no_improvement_epochs 0$' "$project_dir/project.conf"
+! grep -q '^adam_' "$project_dir/project.conf"
 ! grep -q 'threads' "$project_dir/project.conf"
 
 exec {init_lock_fd}<>"$project_dir/.neural-c.lock"

@@ -4,18 +4,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "neural/optimizer.h"
 #include "neural/types.h"
 
 #define NEURAL_SHA256_HEX_LENGTH 64U
 #define NEURAL_SHA256_TEXT_CAPACITY (NEURAL_SHA256_HEX_LENGTH + 1U)
-
-typedef enum {
-    NEURAL_OPTIMIZER_GRADIENT_DESCENT
-} NeuralOptimizer;
+#define NEURAL_STATEFUL_CHECKPOINT_FORMAT_VERSION 3U
 
 typedef enum {
     NEURAL_COMPLETION_TARGET,
-    NEURAL_COMPLETION_EARLY_STOPPING
+    NEURAL_COMPLETION_EARLY_STOPPING,
+    NEURAL_COMPLETION_LOSS_TARGET,
+    NEURAL_COMPLETION_NO_IMPROVEMENT
 } NeuralCompletionReason;
 
 typedef struct {
@@ -37,7 +37,7 @@ typedef struct {
     size_t completed_epochs;
     size_t target_epochs;
     uint64_t rng_state;
-    NeuralOptimizer optimizer;
+    NeuralOptimizerKind optimizer;
     NeuralProjectDigests digests;
     size_t best_epoch;
     neural_real best_loss;

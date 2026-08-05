@@ -137,8 +137,10 @@ for the last epoch; zero, the default, disables clipping and preserves legacy
 updates exactly. `--l1 V` and `--l2 V` add deterministic regularization before
 norm measurement and clipping; weights are regularized by default, while
 `--regularize-biases` includes biases explicitly. Progress and completion keep
-data `loss` distinct from the regularized `objective`. Mutating commands hold
-an exclusive, non-blocking project lock
+data `loss` distinct from the regularized `objective`. The current
+`--optimizer gradient_descent` default passes updates through the versioned
+optimizer boundary while preserving established results exactly. Mutating
+commands hold an exclusive, non-blocking project lock
 in `.neural-c.lock`; `inspect` uses a shared lock and reports an immediate
 project-busy error when training or forced initialization is active.
 
@@ -219,6 +221,8 @@ the output is identical across worker counts.
 Validation/test ownership, metric contracts, reporting, history, and early
 stopping are specified in
 [`docs/observability-evaluation.md`](docs/observability-evaluation.md).
+For a complete command-oriented workflow, optimizer and schedule examples, and
+the external input/output protocol, see [`docs/usage.md`](docs/usage.md).
 
 `inspect` loads and validates the complete project and prints its canonical
 model, dataset, and training SHA-256 digests. Fresh training, resume,

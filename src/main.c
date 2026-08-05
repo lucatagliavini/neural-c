@@ -113,6 +113,20 @@ enum option_index {
     OPTION_L1_REGULARIZATION,
     OPTION_L2_REGULARIZATION,
     OPTION_REGULARIZE_BIASES,
+    OPTION_OPTIMIZER,
+    OPTION_MOMENTUM,
+    OPTION_ADAM_BETA1,
+    OPTION_ADAM_BETA2,
+    OPTION_ADAM_EPSILON,
+    OPTION_LR_SCHEDULE,
+    OPTION_LR_DECAY,
+    OPTION_LR_STEP_EPOCHS,
+    OPTION_LR_PLATEAU_PATIENCE,
+    OPTION_LR_PLATEAU_MIN_DELTA,
+    OPTION_DIVERGENCE_THRESHOLD,
+    OPTION_TARGET_LOSS,
+    OPTION_MAX_NO_IMPROVEMENT,
+    OPTION_NO_IMPROVEMENT_MIN_DELTA,
     OPTION_SHUFFLE,
     OPTION_RESUME,
     OPTION_ADDITIONAL_EPOCHS,
@@ -149,6 +163,20 @@ static const NeuralOptionDefinition option_definitions[OPTION_COUNT] = {
     {"l1", '\0', NEURAL_OPTION_VALUE, 0},
     {"l2", '\0', NEURAL_OPTION_VALUE, 0},
     {"regularize-biases", '\0', NEURAL_OPTION_FLAG, 0},
+    {"optimizer", '\0', NEURAL_OPTION_VALUE, 0},
+    {"momentum", '\0', NEURAL_OPTION_VALUE, 0},
+    {"adam-beta1", '\0', NEURAL_OPTION_VALUE, 0},
+    {"adam-beta2", '\0', NEURAL_OPTION_VALUE, 0},
+    {"adam-epsilon", '\0', NEURAL_OPTION_VALUE, 0},
+    {"lr-schedule", '\0', NEURAL_OPTION_VALUE, 0},
+    {"lr-decay", '\0', NEURAL_OPTION_VALUE, 0},
+    {"lr-step-epochs", '\0', NEURAL_OPTION_VALUE, 0},
+    {"lr-plateau-patience", '\0', NEURAL_OPTION_VALUE, 0},
+    {"lr-plateau-min-delta", '\0', NEURAL_OPTION_VALUE, 0},
+    {"divergence-threshold", '\0', NEURAL_OPTION_VALUE, 0},
+    {"target-loss", '\0', NEURAL_OPTION_VALUE, 0},
+    {"max-no-improvement-epochs", '\0', NEURAL_OPTION_VALUE, 0},
+    {"no-improvement-min-delta", '\0', NEURAL_OPTION_VALUE, 0},
     {"shuffle", '\0', NEURAL_OPTION_FLAG, 0},
     {"resume", '\0', NEURAL_OPTION_FLAG, 0},
     {"additional-epochs", '\0', NEURAL_OPTION_VALUE, 0},
@@ -202,6 +230,20 @@ static void print_usage(FILE *stream)
             "      --l2 V                 L2 coefficient; 0 disables\n"
             "                              Default: %.*g\n"
             "      --regularize-biases    Include biases in L1/L2 penalties\n"
+            "      --optimizer NAME       Default: %s\n"
+            "      --momentum V           Momentum coefficient; default: %.*g\n"
+            "      --adam-beta1 V         Adam first-moment decay; default: %.*g\n"
+            "      --adam-beta2 V         Adam second-moment decay; default: %.*g\n"
+            "      --adam-epsilon V       Adam stability epsilon; default: %.*g\n"
+            "      --lr-schedule NAME     constant, step, exponential, plateau\n"
+            "      --lr-decay V           Schedule multiplier; default: %.*g\n"
+            "      --lr-step-epochs N     Step interval; default: %zu\n"
+            "      --lr-plateau-patience N Plateau patience; default: %zu\n"
+            "      --lr-plateau-min-delta V Plateau improvement; default: %.*g\n"
+            "      --divergence-threshold V Fail above loss; 0 disables\n"
+            "      --target-loss V        Stop at or below loss; -1 disables\n"
+            "      --max-no-improvement-epochs N Stop after stale epochs\n"
+            "      --no-improvement-min-delta V Required loss improvement\n"
             "      --shuffle              Deterministic per-epoch shuffling\n"
             "\nTraining continuation:\n"
             "      --resume                Resume checkpoint.txt\n"
@@ -245,9 +287,39 @@ static void print_usage(FILE *stream)
             (double)NEURAL_DEFAULT_INIT_L1_REGULARIZATION,
             DBL_DECIMAL_DIG,
             (double)NEURAL_DEFAULT_INIT_L2_REGULARIZATION,
+            NEURAL_DEFAULT_INIT_OPTIMIZER,
+            DBL_DECIMAL_DIG,
+            (double)NEURAL_DEFAULT_INIT_MOMENTUM,
+            DBL_DECIMAL_DIG,
+            (double)NEURAL_DEFAULT_INIT_ADAM_BETA1,
+            DBL_DECIMAL_DIG,
+            (double)NEURAL_DEFAULT_INIT_ADAM_BETA2,
+            DBL_DECIMAL_DIG,
+            (double)NEURAL_DEFAULT_INIT_ADAM_EPSILON,
+            DBL_DECIMAL_DIG,
+            (double)NEURAL_DEFAULT_INIT_LR_DECAY,
+            (size_t)NEURAL_DEFAULT_INIT_LR_STEP_EPOCHS,
+            (size_t)NEURAL_DEFAULT_INIT_LR_PLATEAU_PATIENCE,
+            DBL_DECIMAL_DIG,
+            (double)NEURAL_DEFAULT_INIT_LR_PLATEAU_MIN_DELTA,
             (size_t)NEURAL_DEFAULT_THREAD_COUNT,
             (size_t)NEURAL_DEFAULT_REPORT_INTERVAL,
             (size_t)NEURAL_DEFAULT_PREDICTION_BATCH_SIZE);
+}
+
+static const char *completion_reason_name(NeuralCompletionReason reason)
+{
+    switch (reason) {
+    case NEURAL_COMPLETION_TARGET:
+        return "target";
+    case NEURAL_COMPLETION_EARLY_STOPPING:
+        return "early_stopping";
+    case NEURAL_COMPLETION_LOSS_TARGET:
+        return "loss_target";
+    case NEURAL_COMPLETION_NO_IMPROVEMENT:
+        return "no_improvement";
+    }
+    return "unknown";
 }
 
 typedef struct {
@@ -562,7 +634,21 @@ static int command_init(const char *directory,
         NEURAL_DEFAULT_INIT_GRADIENT_CLIP_NORM,
         NEURAL_DEFAULT_INIT_L1_REGULARIZATION,
         NEURAL_DEFAULT_INIT_L2_REGULARIZATION,
-        NEURAL_DEFAULT_INIT_REGULARIZE_BIASES
+        NEURAL_DEFAULT_INIT_REGULARIZE_BIASES,
+        NEURAL_OPTIMIZER_GRADIENT_DESCENT,
+        NEURAL_DEFAULT_INIT_MOMENTUM,
+        NEURAL_DEFAULT_INIT_ADAM_BETA1,
+        NEURAL_DEFAULT_INIT_ADAM_BETA2,
+        NEURAL_DEFAULT_INIT_ADAM_EPSILON,
+        NEURAL_LR_SCHEDULE_CONSTANT,
+        NEURAL_DEFAULT_INIT_LR_DECAY,
+        NEURAL_DEFAULT_INIT_LR_STEP_EPOCHS,
+        NEURAL_DEFAULT_INIT_LR_PLATEAU_PATIENCE,
+        NEURAL_DEFAULT_INIT_LR_PLATEAU_MIN_DELTA,
+        NEURAL_DEFAULT_INIT_DIVERGENCE_THRESHOLD,
+        NEURAL_DEFAULT_INIT_TARGET_LOSS,
+        NEURAL_DEFAULT_INIT_MAX_NO_IMPROVEMENT_EPOCHS,
+        NEURAL_DEFAULT_INIT_NO_IMPROVEMENT_MIN_DELTA
     };
     NeuralError error;
     const char *loss_name;
@@ -701,6 +787,108 @@ static int command_init(const char *directory,
     }
     if (neural_option_is_present(options, OPTION_REGULARIZE_BIASES)) {
         training.regularize_biases = 1;
+    }
+    if (neural_option_is_present(options, OPTION_OPTIMIZER) &&
+        !neural_optimizer_from_name(
+            neural_option_value(options, OPTION_OPTIMIZER),
+            &training.optimizer)) {
+        neural_error_set(
+            &error,
+            "unsupported optimizer '%s'",
+            neural_option_value(options, OPTION_OPTIMIZER));
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_MOMENTUM) &&
+        !neural_parse_real(neural_option_value(options, OPTION_MOMENTUM),
+                           &training.momentum)) {
+        neural_error_set(&error, "momentum must be finite");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_ADAM_BETA1) &&
+        !neural_parse_real(neural_option_value(options, OPTION_ADAM_BETA1),
+                           &training.adam_beta1)) {
+        neural_error_set(&error, "adam-beta1 must be finite");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_ADAM_BETA2) &&
+        !neural_parse_real(neural_option_value(options, OPTION_ADAM_BETA2),
+                           &training.adam_beta2)) {
+        neural_error_set(&error, "adam-beta2 must be finite");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_ADAM_EPSILON) &&
+        !neural_parse_real(neural_option_value(options, OPTION_ADAM_EPSILON),
+                           &training.adam_epsilon)) {
+        neural_error_set(&error, "adam-epsilon must be finite");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_LR_SCHEDULE) &&
+        !neural_learning_rate_schedule_from_name(
+            neural_option_value(options, OPTION_LR_SCHEDULE),
+            &training.learning_rate_schedule)) {
+        neural_error_set(&error,
+                         "unsupported learning-rate schedule '%s'",
+                         neural_option_value(options, OPTION_LR_SCHEDULE));
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_LR_DECAY) &&
+        !neural_parse_real(neural_option_value(options, OPTION_LR_DECAY),
+                           &training.learning_rate_decay)) {
+        neural_error_set(&error, "lr-decay must be finite");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_LR_STEP_EPOCHS) &&
+        !neural_parse_size(
+            neural_option_value(options, OPTION_LR_STEP_EPOCHS),
+            &training.learning_rate_step_epochs)) {
+        neural_error_set(&error, "lr-step-epochs must be non-negative");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_LR_PLATEAU_PATIENCE) &&
+        !neural_parse_size(
+            neural_option_value(options, OPTION_LR_PLATEAU_PATIENCE),
+            &training.learning_rate_plateau_patience)) {
+        neural_error_set(&error,
+                         "lr-plateau-patience must be non-negative");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_LR_PLATEAU_MIN_DELTA) &&
+        !neural_parse_real(
+            neural_option_value(options, OPTION_LR_PLATEAU_MIN_DELTA),
+            &training.learning_rate_plateau_min_delta)) {
+        neural_error_set(&error,
+                         "lr-plateau-min-delta must be finite");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_DIVERGENCE_THRESHOLD) &&
+        !neural_parse_real(
+            neural_option_value(options, OPTION_DIVERGENCE_THRESHOLD),
+            &training.divergence_threshold)) {
+        neural_error_set(&error, "divergence-threshold must be finite");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_TARGET_LOSS) &&
+        !neural_parse_real(neural_option_value(options, OPTION_TARGET_LOSS),
+                           &training.target_loss)) {
+        neural_error_set(&error, "target-loss must be finite");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_MAX_NO_IMPROVEMENT) &&
+        !neural_parse_size(
+            neural_option_value(options, OPTION_MAX_NO_IMPROVEMENT),
+            &training.max_no_improvement_epochs)) {
+        neural_error_set(&error,
+                         "max-no-improvement-epochs must be non-negative");
+        goto invalid;
+    }
+    if (neural_option_is_present(options,
+                                 OPTION_NO_IMPROVEMENT_MIN_DELTA) &&
+        !neural_parse_real(
+            neural_option_value(options, OPTION_NO_IMPROVEMENT_MIN_DELTA),
+            &training.no_improvement_min_delta)) {
+        neural_error_set(&error,
+                         "no-improvement-min-delta must be finite");
+        goto invalid;
     }
     if (!neural_training_config_validate(&training, &error)) {
         goto invalid;
@@ -878,6 +1066,9 @@ static int command_train(const char *directory,
                result.final_max_gradient_norm,
                result.clipped_batch_count,
                result.worker_count);
+        printf("Training completion reason: %s\n",
+               neural_training_completion_reason_name(
+                   result.completion_reason));
         return EXIT_OK;
     }
     fprintf(stderr, "%s: unknown training mode\n", neural_name());
@@ -903,9 +1094,7 @@ static int write_prediction_header(FILE *stream,
                 "completion %s\n",
                 snapshot->selected_epoch,
                 snapshot->target_epochs,
-                snapshot->completion_reason ==
-                        NEURAL_COMPLETION_EARLY_STOPPING
-                    ? "early_stopping" : "target") < 0) {
+                completion_reason_name(snapshot->completion_reason)) < 0) {
         return 0;
     }
     return fprintf(stream,
@@ -1415,9 +1604,8 @@ static int command_evaluate(const char *project,
         printf("selected_epoch %zu\n", snapshot.prediction.selected_epoch);
         printf("target_epochs %zu\n", snapshot.prediction.target_epochs);
         printf("completion %s\n",
-               snapshot.prediction.completion_reason ==
-                       NEURAL_COMPLETION_EARLY_STOPPING
-                   ? "early_stopping" : "target");
+               completion_reason_name(
+                   snapshot.prediction.completion_reason));
     }
     printf("dataset %s\n", dataset_name);
     printf("samples %zu\n", snapshot.dataset.sample_count);
@@ -1569,9 +1757,7 @@ static int print_project_state(const char *directory,
         printf("Weights target epochs: %zu\n",
                weights_metadata.target_epochs);
         printf("Weights completion: %s\n",
-               weights_metadata.completion_reason ==
-                       NEURAL_COMPLETION_EARLY_STOPPING
-                   ? "early_stopping" : "target");
+               completion_reason_name(weights_metadata.completion_reason));
     }
     printf("Checkpoint state: %s\n",
            checkpoint_exists ? "present" : "absent");
@@ -1711,6 +1897,67 @@ static int command_inspect(const char *directory, int include_state)
     }
     printf("Regularize biases: %s\n",
            project.training.regularize_biases ? "enabled" : "disabled");
+    printf("Optimizer: %s (abstraction version %zu)\n",
+           neural_optimizer_name(project.training.optimizer),
+           (size_t)NEURAL_OPTIMIZER_ABSTRACTION_VERSION);
+    if (project.training.optimizer == NEURAL_OPTIMIZER_MOMENTUM) {
+        printf("Momentum: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.training.momentum);
+    } else if (project.training.optimizer == NEURAL_OPTIMIZER_ADAM) {
+        printf("Adam beta1: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.training.adam_beta1);
+        printf("Adam beta2: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.training.adam_beta2);
+        printf("Adam epsilon: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.training.adam_epsilon);
+    }
+    printf("Learning-rate schedule: %s\n",
+           neural_learning_rate_schedule_name(
+               project.training.learning_rate_schedule));
+    if (project.training.learning_rate_schedule !=
+        NEURAL_LR_SCHEDULE_CONSTANT) {
+        printf("Learning-rate decay: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.training.learning_rate_decay);
+    }
+    if (project.training.learning_rate_schedule == NEURAL_LR_SCHEDULE_STEP) {
+        printf("Learning-rate step epochs: %zu\n",
+               project.training.learning_rate_step_epochs);
+    } else if (project.training.learning_rate_schedule ==
+               NEURAL_LR_SCHEDULE_PLATEAU) {
+        printf("Learning-rate plateau patience: %zu\n",
+               project.training.learning_rate_plateau_patience);
+        printf("Learning-rate plateau min delta: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.training.learning_rate_plateau_min_delta);
+    }
+    if (project.training.divergence_threshold == 0.0) {
+        printf("Divergence threshold: disabled\n");
+    } else {
+        printf("Divergence threshold: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.training.divergence_threshold);
+    }
+    if (project.training.target_loss < 0.0) {
+        printf("Target loss: disabled\n");
+    } else {
+        printf("Target loss: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.training.target_loss);
+    }
+    if (project.training.max_no_improvement_epochs == 0U) {
+        printf("Maximum no-improvement epochs: disabled\n");
+    } else {
+        printf("Maximum no-improvement epochs: %zu\n",
+               project.training.max_no_improvement_epochs);
+        printf("No-improvement min delta: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.training.no_improvement_min_delta);
+    }
     printf("Early stopping patience: %zu\n",
            project.training.early_stopping_patience);
     printf("Early stopping min delta: %.*g\n",

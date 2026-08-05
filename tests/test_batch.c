@@ -8,6 +8,7 @@
 #include "neural/batch.h"
 #include "neural/gradient.h"
 #include "neural/model.h"
+#include "neural/optimizer.h"
 
 static int failures = 0;
 
@@ -648,6 +649,335 @@ static void test_regularization(void)
     neural_model_free(model);
 }
 
+static int models_equal(const NeuralModel *left, const NeuralModel *right)
+{
+    size_t layer_index;
+
+    if (neural_model_layer_count(left) != neural_model_layer_count(right)) {
+        return 0;
+    }
+    for (layer_index = 0U;
+         layer_index < neural_model_layer_count(left);
+         layer_index++) {
+        size_t left_weight_count;
+        size_t right_weight_count;
+        size_t left_bias_count;
+        size_t right_bias_count;
+        const neural_real *left_weights = neural_model_layer_weights(
+            left, layer_index, &left_weight_count);
+        const neural_real *right_weights = neural_model_layer_weights(
+            right, layer_index, &right_weight_count);
+        const neural_real *left_biases = neural_model_layer_biases(
+            left, layer_index, &left_bias_count);
+        const neural_real *right_biases = neural_model_layer_biases(
+            right, layer_index, &right_bias_count);
+
+        if (left_weight_count != right_weight_count ||
+            left_bias_count != right_bias_count ||
+            memcmp(left_weights,
+                   right_weights,
+                   left_weight_count * sizeof(*left_weights)) != 0 ||
+            memcmp(left_biases,
+                   right_biases,
+                   left_bias_count * sizeof(*left_biases)) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void test_optimizer_abstraction(void)
+{
+    NeuralLayerSpec layers[] = {
+        {2U, {NEURAL_ACTIVATION_TANH, 0U, NULL}},
+        {1U, {NEURAL_ACTIVATION_LINEAR, 0U, NULL}}
+    };
+    NeuralModelSpec spec = {2U, 2U, layers};
+    NeuralModel *direct_model = NULL;
+    NeuralModel *optimized_model = NULL;
+    NeuralGradient *direct_gradient = NULL;
+    NeuralGradient *optimized_gradient = NULL;
+    NeuralOptimizer *optimizer = NULL;
+    NeuralOptimizerOptions options = {
+        NEURAL_OPTIMIZER_GRADIENT_DESCENT, 0.0, 0.0, 0.0, 0.0,
+        0.1, NEURAL_LR_SCHEDULE_CONSTANT, 0.0, 0U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
+    };
+    NeuralOptimizerKind kind = (NeuralOptimizerKind)-1;
+    NeuralError error;
+    int prepared;
+
+    check(strcmp(neural_optimizer_name(NEURAL_OPTIMIZER_GRADIENT_DESCENT),
+                 "gradient_descent") == 0 &&
+              neural_optimizer_from_name("gradient_descent", &kind) &&
+              kind == NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+              neural_optimizer_from_name("momentum", &kind) &&
+              kind == NEURAL_OPTIMIZER_MOMENTUM &&
+              neural_optimizer_from_name("adam", &kind) &&
+              kind == NEURAL_OPTIMIZER_ADAM &&
+              !neural_optimizer_from_name("rmsprop", &kind),
+          "optimizer names must round-trip and reject unsupported values");
+    prepared = neural_model_create(&spec, UINT64_C(17), &direct_model, &error) &&
+               neural_model_create(&spec,
+                                   UINT64_C(17),
+                                   &optimized_model,
+                                   &error) &&
+               neural_gradient_create(direct_model,
+                                      &direct_gradient,
+                                      &error) &&
+               neural_gradient_create(optimized_model,
+                                      &optimized_gradient,
+                                      &error) &&
+               fill_gradient(direct_gradient, 0.375) &&
+               fill_gradient(optimized_gradient, 0.375) &&
+               neural_optimizer_create(optimized_model,
+                                       &options,
+                                       &optimizer,
+                                       &error);
+    check(prepared, "optimizer abstraction fixtures must be prepared");
+    if (prepared) {
+        check(neural_optimizer_kind(optimizer) ==
+                  NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+                  neural_optimizer_version(optimizer) ==
+                      NEURAL_OPTIMIZER_ABSTRACTION_VERSION,
+              "optimizer instances must expose stable identity and version");
+        check(!neural_optimizer_step(optimizer,
+                                     direct_model,
+                                     direct_gradient,
+                                     0.125,
+                                     &error),
+              "optimizer instances must reject a different model");
+        check(neural_model_apply_gradient(direct_model,
+                                          direct_gradient,
+                                          0.125,
+                                          &error) &&
+                  neural_optimizer_step(optimizer,
+                                        optimized_model,
+                                        optimized_gradient,
+                                        0.125,
+                                        &error) &&
+                  models_equal(direct_model, optimized_model),
+              "gradient descent abstraction must preserve exact updates");
+    }
+    neural_optimizer_free(optimizer);
+    neural_gradient_free(optimized_gradient);
+    neural_gradient_free(direct_gradient);
+    neural_model_free(optimized_model);
+    neural_model_free(direct_model);
+}
+
+static void test_stateful_optimizers(void)
+{
+    NeuralLayerSpec layer = {
+        1U, {NEURAL_ACTIVATION_LINEAR, 0U, NULL}
+    };
+    NeuralModelSpec spec = {1U, 1U, &layer};
+    NeuralOptimizerOptions momentum_options = {
+        NEURAL_OPTIMIZER_MOMENTUM, 0.5, 0.0, 0.0, 0.0,
+        0.1, NEURAL_LR_SCHEDULE_CONSTANT, 0.0, 0U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
+    };
+    NeuralOptimizerOptions adam_options = {
+        NEURAL_OPTIMIZER_ADAM, 0.0, 0.9, 0.999, 1e-8,
+        0.1, NEURAL_LR_SCHEDULE_CONSTANT, 0.0, 0U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
+    };
+    neural_real initial_weight[] = {1.0};
+    neural_real initial_bias[] = {-1.0};
+    NeuralModel *momentum_model = NULL;
+    NeuralModel *adam_model = NULL;
+    NeuralModel *adam_reference = NULL;
+    NeuralGradient *momentum_gradient = NULL;
+    NeuralGradient *adam_gradient = NULL;
+    NeuralGradient *adam_reference_gradient = NULL;
+    NeuralOptimizer *momentum = NULL;
+    NeuralOptimizer *adam = NULL;
+    NeuralOptimizer *adam_reference_optimizer = NULL;
+    NeuralError error;
+    int prepared;
+
+    prepared = neural_model_create(&spec,
+                                   UINT64_C(21),
+                                   &momentum_model,
+                                   &error) &&
+               neural_model_create(&spec, UINT64_C(21), &adam_model, &error) &&
+               neural_model_create(&spec,
+                                   UINT64_C(21),
+                                   &adam_reference,
+                                   &error) &&
+               neural_model_set_layer_parameters(momentum_model,
+                                                 0U,
+                                                 initial_weight,
+                                                 1U,
+                                                 initial_bias,
+                                                 1U,
+                                                 &error) &&
+               neural_model_set_layer_parameters(adam_model,
+                                                 0U,
+                                                 initial_weight,
+                                                 1U,
+                                                 initial_bias,
+                                                 1U,
+                                                 &error) &&
+               neural_model_set_layer_parameters(adam_reference,
+                                                 0U,
+                                                 initial_weight,
+                                                 1U,
+                                                 initial_bias,
+                                                 1U,
+                                                 &error) &&
+               neural_gradient_create(momentum_model,
+                                      &momentum_gradient,
+                                      &error) &&
+               neural_gradient_create(adam_model, &adam_gradient, &error) &&
+               neural_gradient_create(adam_reference,
+                                      &adam_reference_gradient,
+                                      &error) &&
+               neural_optimizer_create(momentum_model,
+                                       &momentum_options,
+                                       &momentum,
+                                       &error) &&
+               neural_optimizer_create(adam_model,
+                                       &adam_options,
+                                       &adam,
+                                       &error) &&
+               neural_optimizer_create(adam_reference,
+                                       &adam_options,
+                                       &adam_reference_optimizer,
+                                       &error);
+    check(prepared, "stateful optimizer fixtures must be prepared");
+    if (prepared) {
+        neural_real *momentum_weights = neural_gradient_layer_weights(
+            momentum_gradient, 0U, NULL);
+        neural_real *momentum_biases = neural_gradient_layer_biases(
+            momentum_gradient, 0U, NULL);
+        neural_real *adam_weights = neural_gradient_layer_weights(
+            adam_gradient, 0U, NULL);
+        neural_real *adam_biases = neural_gradient_layer_biases(
+            adam_gradient, 0U, NULL);
+        neural_real *reference_weights = neural_gradient_layer_weights(
+            adam_reference_gradient, 0U, NULL);
+        neural_real *reference_biases = neural_gradient_layer_biases(
+            adam_reference_gradient, 0U, NULL);
+        const neural_real *model_weights;
+        const neural_real *model_biases;
+
+        momentum_weights[0] = 2.0;
+        momentum_biases[0] = -4.0;
+        check(neural_optimizer_step(momentum,
+                                    momentum_model,
+                                    momentum_gradient,
+                                    0.1,
+                                    &error) &&
+                  neural_optimizer_step(momentum,
+                                        momentum_model,
+                                        momentum_gradient,
+                                        0.1,
+                                        &error),
+              "momentum must apply two finite deterministic steps");
+        model_weights = neural_model_layer_weights(momentum_model, 0U, NULL);
+        model_biases = neural_model_layer_biases(momentum_model, 0U, NULL);
+        check(fabs(model_weights[0] - 0.5) < 1e-15 &&
+                  fabs(model_biases[0]) < 1e-15,
+              "momentum velocity must follow its specified recurrence");
+
+        adam_weights[0] = DBL_MAX;
+        adam_biases[0] = 1.0;
+        check(!neural_optimizer_step(adam,
+                                     adam_model,
+                                     adam_gradient,
+                                     0.1,
+                                     &error) &&
+                  models_equal(adam_model, adam_reference),
+              "non-finite Adam candidates must not mutate model or state");
+        adam_weights[0] = 2.0;
+        adam_biases[0] = -4.0;
+        reference_weights[0] = 2.0;
+        reference_biases[0] = -4.0;
+        check(neural_optimizer_step(adam,
+                                    adam_model,
+                                    adam_gradient,
+                                    0.1,
+                                    &error) &&
+                  neural_optimizer_step(adam_reference_optimizer,
+                                        adam_reference,
+                                        adam_reference_gradient,
+                                        0.1,
+                                        &error) &&
+                  models_equal(adam_model, adam_reference),
+              "failed Adam steps must leave the next valid step exact");
+    }
+    neural_optimizer_free(adam_reference_optimizer);
+    neural_optimizer_free(adam);
+    neural_optimizer_free(momentum);
+    neural_gradient_free(adam_reference_gradient);
+    neural_gradient_free(adam_gradient);
+    neural_gradient_free(momentum_gradient);
+    neural_model_free(adam_reference);
+    neural_model_free(adam_model);
+    neural_model_free(momentum_model);
+}
+
+static void test_learning_rate_schedules(void)
+{
+    NeuralLayerSpec layer = {
+        1U, {NEURAL_ACTIVATION_LINEAR, 0U, NULL}
+    };
+    NeuralModelSpec spec = {1U, 1U, &layer};
+    NeuralOptimizerOptions options = {
+        NEURAL_OPTIMIZER_GRADIENT_DESCENT, 0.0, 0.0, 0.0, 0.0,
+        1.0, NEURAL_LR_SCHEDULE_STEP, 0.5, 2U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
+    };
+    NeuralModel *model = NULL;
+    NeuralOptimizer *schedule = NULL;
+    NeuralError error;
+
+    check(neural_model_create(&spec, UINT64_C(29), &model, &error) &&
+              neural_optimizer_create(model, &options, &schedule, &error),
+          "step schedule fixture must be prepared");
+    if (schedule != NULL) {
+        check(neural_optimizer_observe_epoch(schedule, 4.0, &error) &&
+                  neural_optimizer_current_learning_rate(schedule) == 1.0 &&
+                  neural_optimizer_schedule_next_transition(schedule) == 2U &&
+                  neural_optimizer_observe_epoch(schedule, 3.0, &error) &&
+                  neural_optimizer_current_learning_rate(schedule) == 0.5 &&
+                  neural_optimizer_schedule_next_transition(schedule) == 4U,
+              "step schedule must transition after exact epoch intervals");
+    }
+    neural_optimizer_free(schedule);
+    schedule = NULL;
+
+    options.schedule = NEURAL_LR_SCHEDULE_EXPONENTIAL;
+    options.schedule_decay = 0.25;
+    check(neural_optimizer_create(model, &options, &schedule, &error) &&
+              neural_optimizer_observe_epoch(schedule, 4.0, &error) &&
+              neural_optimizer_current_learning_rate(schedule) == 0.25 &&
+              neural_optimizer_observe_epoch(schedule, 3.0, &error) &&
+              neural_optimizer_current_learning_rate(schedule) == 0.0625,
+          "exponential schedule must decay after every completed epoch");
+    neural_optimizer_free(schedule);
+    schedule = NULL;
+
+    options.schedule = NEURAL_LR_SCHEDULE_PLATEAU;
+    options.schedule_decay = 0.5;
+    options.schedule_plateau_patience = 2U;
+    options.schedule_plateau_min_delta = 0.1;
+    check(neural_optimizer_create(model, &options, &schedule, &error) &&
+              neural_optimizer_observe_epoch(schedule, 1.0, &error) &&
+              neural_optimizer_observe_epoch(schedule, 0.95, &error) &&
+              neural_optimizer_current_learning_rate(schedule) == 1.0 &&
+              neural_optimizer_schedule_stale_epochs(schedule) == 1U &&
+              neural_optimizer_observe_epoch(schedule, 0.96, &error) &&
+              neural_optimizer_current_learning_rate(schedule) == 0.5 &&
+              neural_optimizer_schedule_stale_epochs(schedule) == 0U &&
+              neural_optimizer_observe_epoch(schedule, 0.8, &error) &&
+              neural_optimizer_schedule_best_metric(schedule) == 0.8,
+          "plateau schedule must use patience and minimum improvement");
+    neural_optimizer_free(schedule);
+    neural_model_free(model);
+}
+
 int main(void)
 {
     test_batch_plan();
@@ -656,6 +986,9 @@ int main(void)
     test_transactional_gradient_add();
     test_gradient_norm_and_clipping();
     test_regularization();
+    test_optimizer_abstraction();
+    test_stateful_optimizers();
+    test_learning_rate_schedules();
 
     if (failures != 0) {
         fprintf(stderr, "%d batch test(s) failed\n", failures);

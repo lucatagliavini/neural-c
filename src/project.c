@@ -405,6 +405,65 @@ int neural_training_config_validate(const NeuralTrainingConfig *config,
         neural_error_set(error, "regularize_biases must be either 0 or 1");
         return 0;
     }
+    if (config->optimizer != NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+        config->optimizer != NEURAL_OPTIMIZER_MOMENTUM &&
+        config->optimizer != NEURAL_OPTIMIZER_ADAM) {
+        neural_error_set(error, "training configuration has an invalid optimizer");
+        return 0;
+    }
+    if (config->optimizer == NEURAL_OPTIMIZER_MOMENTUM &&
+        (!isfinite(config->momentum) || config->momentum < 0.0 ||
+         config->momentum >= 1.0)) {
+        neural_error_set(error, "momentum must be finite and in [0, 1)");
+        return 0;
+    }
+    if (config->optimizer == NEURAL_OPTIMIZER_ADAM &&
+        (!isfinite(config->adam_beta1) || config->adam_beta1 < 0.0 ||
+         config->adam_beta1 >= 1.0 || !isfinite(config->adam_beta2) ||
+         config->adam_beta2 < 0.0 || config->adam_beta2 >= 1.0 ||
+         !isfinite(config->adam_epsilon) || config->adam_epsilon <= 0.0)) {
+        neural_error_set(
+            error,
+            "Adam beta values must be in [0, 1) and epsilon must be positive");
+        return 0;
+    }
+    if (strcmp(neural_learning_rate_schedule_name(
+                   config->learning_rate_schedule),
+               "unknown") == 0) {
+        neural_error_set(error, "learning-rate schedule is invalid");
+        return 0;
+    }
+    if (config->learning_rate_schedule != NEURAL_LR_SCHEDULE_CONSTANT &&
+        (!isfinite(config->learning_rate_decay) ||
+         config->learning_rate_decay <= 0.0 ||
+         config->learning_rate_decay >= 1.0)) {
+        neural_error_set(error,
+                         "learning-rate decay must be finite and in (0, 1)");
+        return 0;
+    }
+    if (config->learning_rate_schedule == NEURAL_LR_SCHEDULE_STEP &&
+        config->learning_rate_step_epochs == 0U) {
+        neural_error_set(error,
+                         "step learning-rate schedule requires positive epochs");
+        return 0;
+    }
+    if (config->learning_rate_schedule == NEURAL_LR_SCHEDULE_PLATEAU &&
+        (config->learning_rate_plateau_patience == 0U ||
+         !isfinite(config->learning_rate_plateau_min_delta) ||
+         config->learning_rate_plateau_min_delta < 0.0)) {
+        neural_error_set(error,
+                         "plateau schedule requires positive patience and non-negative min delta");
+        return 0;
+    }
+    if (!isfinite(config->divergence_threshold) ||
+        config->divergence_threshold < 0.0 ||
+        !isfinite(config->target_loss) || config->target_loss < -1.0 ||
+        !isfinite(config->no_improvement_min_delta) ||
+        config->no_improvement_min_delta < 0.0) {
+        neural_error_set(error,
+                         "convergence thresholds must be finite and within their supported ranges");
+        return 0;
+    }
     if (config->regularize_biases != 0 &&
         config->l1_regularization == 0.0 &&
         config->l2_regularization == 0.0) {
@@ -734,6 +793,20 @@ int neural_training_config_load(const char *path,
         FIELD_L1_REGULARIZATION = 1024U,
         FIELD_L2_REGULARIZATION = 2048U,
         FIELD_REGULARIZE_BIASES = 4096U,
+        FIELD_OPTIMIZER = 8192U,
+        FIELD_MOMENTUM = 16384U,
+        FIELD_ADAM_BETA1 = 32768U,
+        FIELD_ADAM_BETA2 = 65536U,
+        FIELD_ADAM_EPSILON = 131072U,
+        FIELD_LR_SCHEDULE = 262144U,
+        FIELD_LR_DECAY = 524288U,
+        FIELD_LR_STEP_EPOCHS = 1048576U,
+        FIELD_LR_PLATEAU_PATIENCE = 2097152U,
+        FIELD_LR_PLATEAU_MIN_DELTA = 4194304U,
+        FIELD_DIVERGENCE_THRESHOLD = 8388608U,
+        FIELD_TARGET_LOSS = 16777216U,
+        FIELD_MAX_NO_IMPROVEMENT = 33554432U,
+        FIELD_NO_IMPROVEMENT_MIN_DELTA = 67108864U,
         REQUIRED_FIELDS = FIELD_EPOCHS | FIELD_RATE | FIELD_SEED | FIELD_LOSS |
                           FIELD_CHECKPOINT_INTERVAL,
         EARLY_FIELDS = FIELD_EARLY_PATIENCE | FIELD_EARLY_MIN_DELTA
@@ -744,6 +817,24 @@ int neural_training_config_load(const char *path,
         return 0;
     }
     memset(config, 0, sizeof(*config));
+    config->momentum = NEURAL_DEFAULT_INIT_MOMENTUM;
+    config->adam_beta1 = NEURAL_DEFAULT_INIT_ADAM_BETA1;
+    config->adam_beta2 = NEURAL_DEFAULT_INIT_ADAM_BETA2;
+    config->adam_epsilon = NEURAL_DEFAULT_INIT_ADAM_EPSILON;
+    config->learning_rate_schedule = NEURAL_LR_SCHEDULE_CONSTANT;
+    config->learning_rate_decay = NEURAL_DEFAULT_INIT_LR_DECAY;
+    config->learning_rate_step_epochs = NEURAL_DEFAULT_INIT_LR_STEP_EPOCHS;
+    config->learning_rate_plateau_patience =
+        NEURAL_DEFAULT_INIT_LR_PLATEAU_PATIENCE;
+    config->learning_rate_plateau_min_delta =
+        NEURAL_DEFAULT_INIT_LR_PLATEAU_MIN_DELTA;
+    config->divergence_threshold =
+        NEURAL_DEFAULT_INIT_DIVERGENCE_THRESHOLD;
+    config->target_loss = NEURAL_DEFAULT_INIT_TARGET_LOSS;
+    config->max_no_improvement_epochs =
+        NEURAL_DEFAULT_INIT_MAX_NO_IMPROVEMENT_EPOCHS;
+    config->no_improvement_min_delta =
+        NEURAL_DEFAULT_INIT_NO_IMPROVEMENT_MIN_DELTA;
     neural_error_clear(error);
     stream = fopen(path, "r");
     if (stream == NULL) {
@@ -935,6 +1026,152 @@ int neural_training_config_load(const char *path,
                     "%s:%zu: regularize_biases must be either 0 or 1",
                     path,
                     line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "optimizer") == 0) {
+            field = FIELD_OPTIMIZER;
+            if (!neural_optimizer_from_name(tokens.items[1],
+                                            &config->optimizer)) {
+                neural_error_set(error,
+                                 "%s:%zu: unknown optimizer '%s'",
+                                 path,
+                                 line_number,
+                                 tokens.items[1]);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "momentum") == 0) {
+            field = FIELD_MOMENTUM;
+            if (!neural_parse_real(tokens.items[1], &config->momentum)) {
+                neural_error_set(error,
+                                 "%s:%zu: momentum must be finite",
+                                 path,
+                                 line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "adam_beta1") == 0) {
+            field = FIELD_ADAM_BETA1;
+            if (!neural_parse_real(tokens.items[1], &config->adam_beta1)) {
+                neural_error_set(error,
+                                 "%s:%zu: adam_beta1 must be finite",
+                                 path,
+                                 line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "adam_beta2") == 0) {
+            field = FIELD_ADAM_BETA2;
+            if (!neural_parse_real(tokens.items[1], &config->adam_beta2)) {
+                neural_error_set(error,
+                                 "%s:%zu: adam_beta2 must be finite",
+                                 path,
+                                 line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "adam_epsilon") == 0) {
+            field = FIELD_ADAM_EPSILON;
+            if (!neural_parse_real(tokens.items[1], &config->adam_epsilon)) {
+                neural_error_set(error,
+                                 "%s:%zu: adam_epsilon must be finite",
+                                 path,
+                                 line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "learning_rate_schedule") == 0) {
+            field = FIELD_LR_SCHEDULE;
+            if (!neural_learning_rate_schedule_from_name(
+                    tokens.items[1],
+                    &config->learning_rate_schedule)) {
+                neural_error_set(error,
+                                 "%s:%zu: unknown learning-rate schedule '%s'",
+                                 path,
+                                 line_number,
+                                 tokens.items[1]);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "learning_rate_decay") == 0) {
+            field = FIELD_LR_DECAY;
+            if (!neural_parse_real(tokens.items[1],
+                                   &config->learning_rate_decay)) {
+                neural_error_set(error,
+                                 "%s:%zu: learning_rate_decay must be finite",
+                                 path,
+                                 line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0],
+                          "learning_rate_step_epochs") == 0) {
+            field = FIELD_LR_STEP_EPOCHS;
+            if (!neural_parse_size(tokens.items[1],
+                                   &config->learning_rate_step_epochs)) {
+                neural_error_set(error,
+                                 "%s:%zu: learning_rate_step_epochs must be non-negative",
+                                 path,
+                                 line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0],
+                          "learning_rate_plateau_patience") == 0) {
+            field = FIELD_LR_PLATEAU_PATIENCE;
+            if (!neural_parse_size(
+                    tokens.items[1],
+                    &config->learning_rate_plateau_patience)) {
+                neural_error_set(error,
+                                 "%s:%zu: plateau patience must be non-negative",
+                                 path,
+                                 line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0],
+                          "learning_rate_plateau_min_delta") == 0) {
+            field = FIELD_LR_PLATEAU_MIN_DELTA;
+            if (!neural_parse_real(
+                    tokens.items[1],
+                    &config->learning_rate_plateau_min_delta)) {
+                neural_error_set(error,
+                                 "%s:%zu: plateau min delta must be finite",
+                                 path,
+                                 line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "divergence_threshold") == 0) {
+            field = FIELD_DIVERGENCE_THRESHOLD;
+            if (!neural_parse_real(tokens.items[1],
+                                   &config->divergence_threshold)) {
+                neural_error_set(error,
+                                 "%s:%zu: divergence_threshold must be finite",
+                                 path,
+                                 line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "target_loss") == 0) {
+            field = FIELD_TARGET_LOSS;
+            if (!neural_parse_real(tokens.items[1], &config->target_loss)) {
+                neural_error_set(error,
+                                 "%s:%zu: target_loss must be finite",
+                                 path,
+                                 line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0],
+                          "max_no_improvement_epochs") == 0) {
+            field = FIELD_MAX_NO_IMPROVEMENT;
+            if (!neural_parse_size(
+                    tokens.items[1],
+                    &config->max_no_improvement_epochs)) {
+                neural_error_set(error,
+                                 "%s:%zu: max_no_improvement_epochs must be non-negative",
+                                 path,
+                                 line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0],
+                          "no_improvement_min_delta") == 0) {
+            field = FIELD_NO_IMPROVEMENT_MIN_DELTA;
+            if (!neural_parse_real(tokens.items[1],
+                                   &config->no_improvement_min_delta)) {
+                neural_error_set(error,
+                                 "%s:%zu: no_improvement_min_delta must be finite",
+                                 path,
+                                 line_number);
                 goto cleanup;
             }
         } else {

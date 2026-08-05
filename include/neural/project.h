@@ -6,6 +6,7 @@
 
 #include "neural/activation.h"
 #include "neural/error.h"
+#include "neural/optimizer.h"
 #include "neural/preprocessing.h"
 #include "neural/types.h"
 
@@ -40,6 +41,20 @@ typedef struct {
     neural_real l1_regularization;
     neural_real l2_regularization;
     int regularize_biases;
+    NeuralOptimizerKind optimizer;
+    neural_real momentum;
+    neural_real adam_beta1;
+    neural_real adam_beta2;
+    neural_real adam_epsilon;
+    NeuralLearningRateScheduleKind learning_rate_schedule;
+    neural_real learning_rate_decay;
+    size_t learning_rate_step_epochs;
+    size_t learning_rate_plateau_patience;
+    neural_real learning_rate_plateau_min_delta;
+    neural_real divergence_threshold;
+    neural_real target_loss;
+    size_t max_no_improvement_epochs;
+    neural_real no_improvement_min_delta;
 } NeuralTrainingConfig;
 
 typedef struct {

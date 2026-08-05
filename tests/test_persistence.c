@@ -7,7 +7,9 @@
 #include <string.h>
 
 #include "neural/digest.h"
+#include "neural/gradient.h"
 #include "neural/model.h"
+#include "neural/optimizer.h"
 #include "neural/persistence.h"
 #include "neural/project.h"
 
@@ -556,6 +558,137 @@ static void test_invalid_save(const NeuralProject *project,
     (void)remove("build/tests/invalid-checkpoint.txt");
 }
 
+static void test_stateful_optimizer_checkpoint(
+    const NeuralProject *project,
+    const NeuralProjectDigests *digests)
+{
+    static const char *const path =
+        "build/tests/stateful-optimizer-checkpoint.txt";
+    NeuralOptimizerOptions options = {
+        NEURAL_OPTIMIZER_ADAM, 0.0, 0.9, 0.999, 1e-8,
+        0.01, NEURAL_LR_SCHEDULE_STEP, 0.5, 1U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
+    };
+    NeuralCheckpointMetadata metadata = {0};
+    NeuralCheckpointMetadata loaded = {0};
+    NeuralModel *source = NULL;
+    NeuralModel *destination = NULL;
+    NeuralGradient *source_gradient = NULL;
+    NeuralGradient *destination_gradient = NULL;
+    NeuralOptimizer *source_optimizer = NULL;
+    NeuralOptimizer *destination_optimizer = NULL;
+    NeuralError error;
+    int prepared;
+
+    prepared = neural_model_create(&project->model,
+                                   project->training.seed,
+                                   &source,
+                                   &error) &&
+               neural_model_create(&project->model,
+                                   project->training.seed,
+                                   &destination,
+                                   &error) &&
+               neural_gradient_create(source, &source_gradient, &error) &&
+               neural_gradient_create(destination,
+                                      &destination_gradient,
+                                      &error) &&
+               neural_optimizer_create(source,
+                                       &options,
+                                       &source_optimizer,
+                                       &error) &&
+               neural_optimizer_create(destination,
+                                       &options,
+                                       &destination_optimizer,
+                                       &error);
+    check(prepared, "stateful checkpoint fixtures must be prepared");
+    if (prepared) {
+        size_t layer_index;
+
+        for (layer_index = 0U;
+             layer_index < neural_model_layer_count(source);
+             layer_index++) {
+            size_t weight_count;
+            size_t bias_count;
+            neural_real *source_weights = neural_gradient_layer_weights(
+                source_gradient, layer_index, &weight_count);
+            neural_real *source_biases = neural_gradient_layer_biases(
+                source_gradient, layer_index, &bias_count);
+            neural_real *destination_weights = neural_gradient_layer_weights(
+                destination_gradient, layer_index, NULL);
+            neural_real *destination_biases = neural_gradient_layer_biases(
+                destination_gradient, layer_index, NULL);
+            size_t index;
+
+            for (index = 0U; index < weight_count; index++) {
+                source_weights[index] = 0.25;
+                destination_weights[index] = 0.25;
+            }
+            for (index = 0U; index < bias_count; index++) {
+                source_biases[index] = -0.5;
+                destination_biases[index] = -0.5;
+            }
+        }
+        check(neural_optimizer_step(source_optimizer,
+                                    source,
+                                    source_gradient,
+                                    0.01,
+                                    &error) &&
+                  neural_optimizer_step(source_optimizer,
+                                        source,
+                                        source_gradient,
+                                        0.01,
+                                        &error) &&
+                  neural_optimizer_observe_epoch(source_optimizer,
+                                                 1.0,
+                                                 &error),
+              "source Adam state must advance before persistence");
+        metadata.completed_epochs = 1U;
+        metadata.target_epochs = 2U;
+        metadata.optimizer = NEURAL_OPTIMIZER_ADAM;
+        metadata.rng_state = neural_model_random_state(source);
+        metadata.digests = *digests;
+        check(neural_checkpoint_save_atomic_with_optimizer(path,
+                                                           source,
+                                                           source_optimizer,
+                                                           &metadata,
+                                                           &error),
+              "stateful optimizer checkpoint must save atomically");
+        check(neural_checkpoint_load_with_optimizer(path,
+                                                    destination,
+                                                    destination_optimizer,
+                                                    digests,
+                                                    &loaded,
+                                                    &error) &&
+                  loaded.format_version == 3U &&
+                  neural_optimizer_timestep(destination_optimizer) == 2U &&
+                  neural_optimizer_current_learning_rate(
+                      destination_optimizer) == 0.005 &&
+                  models_have_equal_parameters(source, destination),
+              "checkpoint version 3 must restore model and Adam state");
+        check(neural_optimizer_step(source_optimizer,
+                                    source,
+                                    source_gradient,
+                                    neural_optimizer_current_learning_rate(
+                                        source_optimizer),
+                                    &error) &&
+                  neural_optimizer_step(destination_optimizer,
+                                        destination,
+                                        destination_gradient,
+                                        neural_optimizer_current_learning_rate(
+                                            destination_optimizer),
+                                        &error) &&
+                  models_have_equal_parameters(source, destination),
+              "restored Adam state must reproduce the next update exactly");
+    }
+    neural_optimizer_free(destination_optimizer);
+    neural_optimizer_free(source_optimizer);
+    neural_gradient_free(destination_gradient);
+    neural_gradient_free(source_gradient);
+    neural_model_free(destination);
+    neural_model_free(source);
+    (void)remove(path);
+}
+
 int main(void)
 {
     NeuralProject project = {0};
@@ -569,6 +702,7 @@ int main(void)
         test_project_digests(&project, &digests);
         test_weights_round_trip(&project, &digests);
         test_checkpoint_round_trip(&project, &digests);
+        test_stateful_optimizer_checkpoint(&project, &digests);
         test_invalid_save(&project, &digests);
     }
     neural_project_free(&project);

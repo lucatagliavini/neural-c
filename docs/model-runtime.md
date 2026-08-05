@@ -75,6 +75,9 @@ generic `math.c`:
   Neumaier-compensated ordered reduction, L1/L2 regularization gradients and
   penalties, stable L2 norm calculation, transactional norm clipping, and the
   single transactional parameter update.
+- `optimizer.c` owns the versioned optimizer lifecycle and update boundary.
+  Abstraction version 1 supports gradient descent, Momentum, and Adam; it also
+  owns run-local schedule and convergence state needed at update boundaries.
 - `batch.c` owns contiguous batch planning, deterministic batch-gradient
   accumulation, and the epoch sample-order plan with its independent
   SplitMix64 shuffle stream; it does not execute samples or update parameters.

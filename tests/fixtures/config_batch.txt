@@ -10,3 +10,4 @@ gradient_clip_norm 0.75
 l1_regularization 0.125
 l2_regularization 0.25
 regularize_biases 1
+optimizer gradient_descent

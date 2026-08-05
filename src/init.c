@@ -80,7 +80,7 @@ static int write_model(FILE *stream, const NeuralModelSpec *model)
 
 static int write_project(FILE *stream, const NeuralTrainingConfig *training)
 {
-    return fprintf(stream,
+    if (fprintf(stream,
                    "%s project %d\n\n"
                    "epochs %zu\n"
                    "learning_rate %.*g\n"
@@ -94,7 +94,8 @@ static int write_project(FILE *stream, const NeuralTrainingConfig *training)
                    "gradient_clip_norm %.*g\n"
                    "l1_regularization %.*g\n"
                    "l2_regularization %.*g\n"
-                   "regularize_biases %d\n",
+                   "regularize_biases %d\n"
+                   "optimizer %s\n",
                    NEURAL_FORMAT_MAGIC,
                    NEURAL_FORMAT_VERSION,
                    training->epochs,
@@ -114,7 +115,75 @@ static int write_project(FILE *stream, const NeuralTrainingConfig *training)
                    training->l1_regularization,
                    DBL_DECIMAL_DIG,
                    training->l2_regularization,
-                   training->regularize_biases) >= 0;
+                   training->regularize_biases,
+                   neural_optimizer_name(training->optimizer)) < 0) {
+        return 0;
+    }
+    if (training->optimizer == NEURAL_OPTIMIZER_MOMENTUM) {
+        if (fprintf(stream,
+                    "momentum %.*g\n",
+                    DBL_DECIMAL_DIG,
+                    training->momentum) < 0) {
+            return 0;
+        }
+    }
+    if (training->optimizer == NEURAL_OPTIMIZER_ADAM) {
+        if (fprintf(stream,
+                    "adam_beta1 %.*g\n"
+                    "adam_beta2 %.*g\n"
+                    "adam_epsilon %.*g\n",
+                    DBL_DECIMAL_DIG,
+                    training->adam_beta1,
+                    DBL_DECIMAL_DIG,
+                    training->adam_beta2,
+                    DBL_DECIMAL_DIG,
+                    training->adam_epsilon) < 0) {
+            return 0;
+        }
+    }
+    if (fprintf(stream,
+                "learning_rate_schedule %s\n",
+                neural_learning_rate_schedule_name(
+                    training->learning_rate_schedule)) < 0) {
+        return 0;
+    }
+    if (training->learning_rate_schedule != NEURAL_LR_SCHEDULE_CONSTANT &&
+        fprintf(stream,
+                "learning_rate_decay %.*g\n",
+                DBL_DECIMAL_DIG,
+                training->learning_rate_decay) < 0) {
+        return 0;
+    }
+    if (training->learning_rate_schedule == NEURAL_LR_SCHEDULE_STEP &&
+        fprintf(stream,
+                "learning_rate_step_epochs %zu\n",
+                training->learning_rate_step_epochs) < 0) {
+        return 0;
+    }
+    if (training->learning_rate_schedule == NEURAL_LR_SCHEDULE_PLATEAU &&
+        fprintf(stream,
+                "learning_rate_plateau_patience %zu\n"
+                "learning_rate_plateau_min_delta %.*g\n",
+                training->learning_rate_plateau_patience,
+                DBL_DECIMAL_DIG,
+                training->learning_rate_plateau_min_delta) < 0) {
+        return 0;
+    }
+    if (fprintf(stream,
+                "divergence_threshold %.*g\n"
+                "target_loss %.*g\n"
+                "max_no_improvement_epochs %zu\n"
+                "no_improvement_min_delta %.*g\n",
+                DBL_DECIMAL_DIG,
+                training->divergence_threshold,
+                DBL_DECIMAL_DIG,
+                training->target_loss,
+                training->max_no_improvement_epochs,
+                DBL_DECIMAL_DIG,
+                training->no_improvement_min_delta) < 0) {
+        return 0;
+    }
+    return 1;
 }
 
 static int write_dataset(FILE *stream, const NeuralModelSpec *model)

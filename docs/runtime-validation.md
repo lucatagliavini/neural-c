@@ -116,3 +116,11 @@ calculation and clipping beside shuffle and an incomplete final batch.
 The interrupted-resume fixtures and categorical fixture also enable L1/L2 bias
 regularization, covering objective provenance and coordinator-side ordering on
 both runtimes.
+The same matrix traverses optimizer abstraction version 1 with explicit and
+legacy-default `gradient_descent`; checkpoint resume validates its identity
+without adding mutable state.
+Milestone 10 qualification additionally covers exact Momentum/Adam recurrence,
+transactional non-finite rejection, schedule transitions, checkpoint version 3
+round trips, convergence reasons, and unchanged legacy XOR digests. Native and
+emulated runs must agree on protocol state and use the established tolerance
+for cross-libm floating-point outputs.

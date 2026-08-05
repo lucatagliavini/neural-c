@@ -9,12 +9,14 @@ int neural_project_checkpoint_observer_initialize(
     const char *path,
     const NeuralModel *model,
     const NeuralProjectDigests *digests,
+    NeuralOptimizerKind optimizer,
     size_t interval,
     size_t target_epochs,
     NeuralError *error)
 {
     if (observer == NULL || path == NULL || path[0] == '\0' ||
-        model == NULL || digests == NULL || target_epochs == 0U) {
+        model == NULL || digests == NULL || target_epochs == 0U ||
+        strcmp(neural_optimizer_name(optimizer), "unknown") == 0) {
         neural_error_set(error,
                          "periodic checkpoint configuration is invalid");
         return 0;
@@ -24,7 +26,7 @@ int neural_project_checkpoint_observer_initialize(
     observer->model = model;
     observer->interval = interval;
     observer->metadata.target_epochs = target_epochs;
-    observer->metadata.optimizer = NEURAL_OPTIMIZER_GRADIENT_DESCENT;
+    observer->metadata.optimizer = optimizer;
     observer->metadata.digests = *digests;
     return 1;
 }
@@ -66,10 +68,20 @@ int neural_project_checkpoint_observe(const NeuralEpochReport *report,
     observer->metadata.completed_epochs = report->completed_epochs;
     observer->metadata.rng_state =
         neural_model_random_state(observer->model);
-    if (!neural_checkpoint_save_atomic(observer->path,
-                                       observer->model,
-                                       &observer->metadata,
-                                       error)) {
+    if ((observer->metadata.optimizer !=
+             NEURAL_OPTIMIZER_GRADIENT_DESCENT &&
+         (report->optimizer == NULL ||
+          neural_optimizer_kind(report->optimizer) !=
+              observer->metadata.optimizer)) ||
+        !neural_checkpoint_save_atomic_with_optimizer(
+             observer->path,
+             observer->model,
+             report->optimizer,
+             &observer->metadata,
+             error)) {
+        if (error != NULL && error->message[0] == '\0') {
+            neural_error_set(error, "checkpoint optimizer state is missing");
+        }
         return 0;
     }
     if (stop_signal != 0) {

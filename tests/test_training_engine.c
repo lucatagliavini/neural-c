@@ -159,7 +159,10 @@ static void test_xor_training_and_determinism(void)
     NeuralDataset dataset = {4U, 2U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
         10000U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 100U, 0U, 0.0,
-        0U, 0, 0.0, 0.0, 0.0, 0
+        0U, 0, 0.0, 0.0, 0.0, 0, NEURAL_OPTIMIZER_GRADIENT_DESCENT,
+        0.0, 0.0, 0.0, 0.0,
+        NEURAL_LR_SCHEDULE_CONSTANT, 0.0, 0U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
     };
     NeuralExecutionConfig serial = {1U};
     NeuralExecutionConfig parallel = {4U};
@@ -243,7 +246,10 @@ static void test_binary_cross_entropy_training(void)
     NeuralTrainingConfig training = {
         5000U, 0.5, UINT64_C(42),
         NEURAL_LOSS_BINARY_CROSS_ENTROPY, 0U, 0U, 0.0, 0U, 0, 0.0,
-        0.0, 0.0, 0
+        0.0, 0.0, 0, NEURAL_OPTIMIZER_GRADIENT_DESCENT,
+        0.0, 0.0, 0.0, 0.0,
+        NEURAL_LR_SCHEDULE_CONSTANT, 0.0, 0U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
     };
     NeuralExecutionConfig serial = {1U};
     NeuralExecutionConfig parallel = {4U};
@@ -298,10 +304,15 @@ static void test_observer_failure(void)
     NeuralDataset dataset = {1U, 1U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
         3U, 0.1, UINT64_C(7), NEURAL_LOSS_MSE, 1U, 0U, 0.0,
-        0U, 0, 0.0, 0.0, 0.0, 0
+        0U, 0, 0.0, 0.0, 0.0, 0, NEURAL_OPTIMIZER_GRADIENT_DESCENT,
+        0.0, 0.0, 0.0, 0.0,
+        NEURAL_LR_SCHEDULE_CONSTANT, 0.0, 0U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
     };
     NeuralExecutionConfig execution = {1U};
-    NeuralTrainingResult result = {99U, 99U, 99.0, 99.0, 99.0, 99U};
+    NeuralTrainingResult result = {
+        99U, 99U, 99.0, 99.0, 99.0, 99U, NEURAL_TRAINING_IN_PROGRESS
+    };
     ObserverState observer = {1U, 0U, 2U, 0.0};
     NeuralModel *model = NULL;
     NeuralError error;
@@ -342,7 +353,10 @@ static void test_absolute_epoch_ranges(void)
     NeuralDataset dataset = {4U, 2U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
         4U, 0.5, UINT64_C(42), NEURAL_LOSS_MSE, 2U, 0U, 0.0,
-        0U, 0, 0.0, 0.0, 0.0, 0
+        0U, 0, 0.0, 0.0, 0.0, 0, NEURAL_OPTIMIZER_GRADIENT_DESCENT,
+        0.0, 0.0, 0.0, 0.0,
+        NEURAL_LR_SCHEDULE_CONSTANT, 0.0, 0U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
     };
     NeuralExecutionConfig serial = {1U};
     NeuralExecutionConfig parallel = {4U};
@@ -353,7 +367,7 @@ static void test_absolute_epoch_ranges(void)
     NeuralTrainingResult resumed_result;
     NeuralTrainingResult no_work_result;
     NeuralTrainingResult invalid_result = {
-        99U, 99U, 99.0, 99.0, 99.0, 99U
+        99U, 99U, 99.0, 99.0, 99.0, 99U, NEURAL_TRAINING_IN_PROGRESS
     };
     ObserverState no_work_observer = {5U, 0U, 0U, 0.0};
     NeuralError error;
@@ -450,7 +464,10 @@ static void test_mini_batch_determinism_and_continuation(void)
     NeuralDataset dataset = {5U, 1U, 1U, inputs, outputs};
     NeuralTrainingConfig mini_batch = {
         5U, 0.05, UINT64_C(91), NEURAL_LOSS_MSE, 0U, 0U, 0.0,
-        2U, 1, 0.0, 0.0, 0.0, 0
+        2U, 1, 0.0, 0.0, 0.0, 0, NEURAL_OPTIMIZER_GRADIENT_DESCENT,
+        0.0, 0.0, 0.0, 0.0,
+        NEURAL_LR_SCHEDULE_CONSTANT, 0.0, 0U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
     };
     NeuralTrainingConfig full_batch = mini_batch;
     NeuralTrainingConfig oversized_batch = mini_batch;
@@ -737,7 +754,10 @@ static void test_regularization_clipping_order(void)
     NeuralDataset dataset = {1U, 1U, 1U, inputs, outputs};
     NeuralTrainingConfig training = {
         1U, 0.1, UINT64_C(92), NEURAL_LOSS_MSE, 0U, 0U, 0.0,
-        0U, 0, 1.0, 0.5, 0.25, 0
+        0U, 0, 1.0, 0.5, 0.25, 0, NEURAL_OPTIMIZER_GRADIENT_DESCENT,
+        0.0, 0.0, 0.0, 0.0,
+        NEURAL_LR_SCHEDULE_CONSTANT, 0.0, 0U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
     };
     NeuralExecutionConfig execution = {1U};
     neural_real initial_weights[] = {2.0};
@@ -782,6 +802,138 @@ static void test_regularization_clipping_order(void)
     neural_model_free(model);
 }
 
+static void test_adam_worker_determinism(void)
+{
+    NeuralLayerSpec layers[] = {
+        {3U, {NEURAL_ACTIVATION_TANH, 0U, NULL}},
+        {1U, {NEURAL_ACTIVATION_LINEAR, 0U, NULL}}
+    };
+    NeuralModelSpec spec = {1U, 2U, layers};
+    neural_real inputs[] = {-1.0, -0.5, 0.0, 0.5, 1.0};
+    neural_real outputs[] = {-1.0, 0.0, 1.0, 2.0, 3.0};
+    NeuralDataset dataset = {5U, 1U, 1U, inputs, outputs};
+    NeuralTrainingConfig training = {
+        20U, 0.01, UINT64_C(123), NEURAL_LOSS_MSE, 0U, 0U, 0.0,
+        2U, 1, 0.0, 0.0, 0.0, 0, NEURAL_OPTIMIZER_ADAM,
+        0.0, 0.9, 0.999, 1e-8,
+        NEURAL_LR_SCHEDULE_CONSTANT, 0.0, 0U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
+    };
+    NeuralExecutionConfig serial = {1U};
+    NeuralExecutionConfig parallel = {4U};
+    NeuralModel *serial_model = NULL;
+    NeuralModel *parallel_model = NULL;
+    NeuralTrainingResult serial_result;
+    NeuralTrainingResult parallel_result;
+    NeuralError error;
+    int prepared;
+
+    prepared = neural_model_create(&spec,
+                                   training.seed,
+                                   &serial_model,
+                                   &error) &&
+               neural_model_create(&spec,
+                                   training.seed,
+                                   &parallel_model,
+                                   &error);
+    check(prepared, "Adam worker-determinism models must be prepared");
+    if (prepared) {
+        check(neural_model_train(serial_model,
+                                 &dataset,
+                                 &training,
+                                 &serial,
+                                 NULL,
+                                 NULL,
+                                 &serial_result,
+                                 &error) &&
+                  neural_model_train(parallel_model,
+                                     &dataset,
+                                     &training,
+                                     &parallel,
+                                     NULL,
+                                     NULL,
+                                     &parallel_result,
+                                     &error) &&
+                  models_equal(serial_model, parallel_model) &&
+                  serial_result.final_loss == parallel_result.final_loss,
+              "Adam training must be exact across worker counts");
+    }
+    neural_model_free(parallel_model);
+    neural_model_free(serial_model);
+}
+
+static void test_convergence_controls(void)
+{
+    NeuralLayerSpec layer = {
+        1U, {NEURAL_ACTIVATION_LINEAR, 0U, NULL}
+    };
+    NeuralModelSpec spec = {1U, 1U, &layer};
+    neural_real inputs[] = {1.0};
+    neural_real outputs[] = {0.0};
+    NeuralDataset dataset = {1U, 1U, 1U, inputs, outputs};
+    NeuralTrainingConfig training = {
+        10U, 0.01, UINT64_C(301), NEURAL_LOSS_MSE, 0U, 0U, 0.0,
+        0U, 0, 0.0, 0.0, 0.0, 0,
+        NEURAL_OPTIMIZER_GRADIENT_DESCENT, 0.0, 0.0, 0.0, 0.0,
+        NEURAL_LR_SCHEDULE_CONSTANT, 0.0, 0U, 0U, 0.0,
+        0.0, 1e9, 0U, 0.0
+    };
+    NeuralExecutionConfig execution = {1U};
+    NeuralModel *model = NULL;
+    NeuralTrainingResult result;
+    NeuralError error;
+
+    check(neural_model_create(&spec, training.seed, &model, &error) &&
+              neural_model_train(model,
+                                 &dataset,
+                                 &training,
+                                 &execution,
+                                 NULL,
+                                 NULL,
+                                 &result,
+                                 &error) &&
+              result.completed_epochs == 1U &&
+              result.completion_reason == NEURAL_TRAINING_LOSS_TARGET,
+          "target loss must produce an explicit successful completion");
+    neural_model_free(model);
+    model = NULL;
+
+    training.target_loss = -1.0;
+    training.max_no_improvement_epochs = 2U;
+    training.no_improvement_min_delta = 1e9;
+    check(neural_model_create(&spec, training.seed, &model, &error) &&
+              neural_model_train(model,
+                                 &dataset,
+                                 &training,
+                                 &execution,
+                                 NULL,
+                                 NULL,
+                                 &result,
+                                 &error) &&
+              result.completed_epochs == 3U &&
+              result.completion_reason ==
+                  NEURAL_TRAINING_NO_IMPROVEMENT,
+          "no-improvement limit must count stale epochs deterministically");
+    neural_model_free(model);
+    model = NULL;
+
+    training.max_no_improvement_epochs = 0U;
+    training.no_improvement_min_delta = 0.0;
+    training.divergence_threshold = 1e-30;
+    check(neural_model_create(&spec, training.seed, &model, &error) &&
+              !neural_model_train(model,
+                                  &dataset,
+                                  &training,
+                                  &execution,
+                                  NULL,
+                                  NULL,
+                                  &result,
+                                  &error) &&
+              strstr(error.message, "diverged") != NULL,
+          "divergence threshold must fail without successful completion");
+    neural_model_free(model);
+}
+
 int main(void)
 {
     test_xor_training_and_determinism();
@@ -790,6 +942,8 @@ int main(void)
     test_absolute_epoch_ranges();
     test_mini_batch_determinism_and_continuation();
     test_regularization_clipping_order();
+    test_adam_worker_determinism();
+    test_convergence_controls();
 
     if (failures != 0) {
         fprintf(stderr, "%d training-engine test(s) failed\n", failures);

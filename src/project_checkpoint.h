@@ -21,6 +21,7 @@ int neural_project_checkpoint_observer_initialize(
     const char *path,
     const NeuralModel *model,
     const NeuralProjectDigests *digests,
+    NeuralOptimizerKind optimizer,
     size_t interval,
     size_t target_epochs,
     NeuralError *error);

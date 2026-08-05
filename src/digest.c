@@ -248,6 +248,43 @@ static void digest_training(const NeuralTrainingConfig *training,
         update_real(&context, training->l2_regularization);
         update_u64(&context, (uint64_t)training->regularize_biases);
     }
+    if (training->optimizer == NEURAL_OPTIMIZER_MOMENTUM) {
+        update_text(&context, "optimizer");
+        update_text(&context, "momentum_v1");
+        update_real(&context, training->momentum);
+    } else if (training->optimizer == NEURAL_OPTIMIZER_ADAM) {
+        update_text(&context, "optimizer");
+        update_text(&context, "adam_v1");
+        update_real(&context, training->adam_beta1);
+        update_real(&context, training->adam_beta2);
+        update_real(&context, training->adam_epsilon);
+    }
+    if (training->learning_rate_schedule != NEURAL_LR_SCHEDULE_CONSTANT) {
+        update_text(&context, "learning_rate_schedule");
+        update_text(&context,
+                    neural_learning_rate_schedule_name(
+                        training->learning_rate_schedule));
+        update_real(&context, training->learning_rate_decay);
+        if (training->learning_rate_schedule == NEURAL_LR_SCHEDULE_STEP) {
+            update_size(&context, training->learning_rate_step_epochs);
+        } else if (training->learning_rate_schedule ==
+                   NEURAL_LR_SCHEDULE_PLATEAU) {
+            update_size(&context,
+                        training->learning_rate_plateau_patience);
+            update_real(&context,
+                        training->learning_rate_plateau_min_delta);
+        }
+    }
+    if (training->divergence_threshold > 0.0 ||
+        training->target_loss >= 0.0 ||
+        training->max_no_improvement_epochs != 0U) {
+        update_text(&context, "convergence_control");
+        update_text(&context, "loss_v1");
+        update_real(&context, training->divergence_threshold);
+        update_real(&context, training->target_loss);
+        update_size(&context, training->max_no_improvement_epochs);
+        update_real(&context, training->no_improvement_min_delta);
+    }
     if (training->early_stopping_patience != 0U) {
         char validation_digest[NEURAL_SHA256_TEXT_CAPACITY];
 

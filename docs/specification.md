@@ -57,7 +57,7 @@ sizes belong in the header that defines the type. Runtime behavior such as
 epochs, learning rate, loss, random seed, training batch size, and shuffle
 enablement must remain in project files. Gradient clipping is also training
 behavior and belongs there. L1/L2 coefficients and bias treatment are training
-behavior as well.
+behavior as well. Optimizer identity is training behavior and belongs there.
 Defaults used by `init` may be compile-time constants, but must be materialized
 in `project.conf`; training never reads hidden build defaults. Internal enum
 values, bit masks, array indexes, and
@@ -102,6 +102,19 @@ finite positive values enable the exact objective in `training-engine.md`.
 penalty. `init --l1 V`, `init --l2 V`, and `init --regularize-biases` configure
 these values. Enabled regularization changes update arithmetic and is canonical
 training provenance.
+
+`optimizer` is materialized by new initialization. An absent legacy property
+defaults to `gradient_descent`; `momentum` and `adam` own only their relevant
+finite hyperparameters. Unknown names are rejected before filesystem changes.
+The baseline name preserves the historical training digest and exact parameter
+updates.
+
+`learning_rate_schedule` is materialized as `constant`, `step`, `exponential`,
+or `plateau`. Non-constant schedules require a decay strictly between zero and
+one; step requires a positive interval and plateau requires positive patience
+plus a non-negative minimum delta. Divergence threshold zero, target loss `-1`,
+and maximum no-improvement epochs zero disable their respective controls.
+Enabled values and their minimum delta are training provenance.
 
 ## Validation Policy
 

@@ -89,6 +89,13 @@ static void test_core_contract(void)
     check(NEURAL_DEFAULT_INIT_REGULARIZE_BIASES == 0 ||
               NEURAL_DEFAULT_INIT_REGULARIZE_BIASES == 1,
           "default bias regularization must be either zero or one");
+    {
+        NeuralOptimizerKind optimizer;
+        check(neural_optimizer_from_name(NEURAL_DEFAULT_INIT_OPTIMIZER,
+                                         &optimizer) &&
+                  optimizer == NEURAL_OPTIMIZER_GRADIENT_DESCENT,
+              "default optimizer must name the supported baseline");
+    }
     check(isfinite(NEURAL_DEFAULT_GRADIENT_CHECK_EPSILON) &&
               NEURAL_DEFAULT_GRADIENT_CHECK_EPSILON > 0.0,
           "default gradient-check epsilon must be positive and finite");
@@ -283,6 +290,8 @@ static void test_valid_loaders(void)
               config.l2_regularization == 0.0 &&
               config.regularize_biases == 0,
           "legacy training configuration must default to no regularization");
+    check(config.optimizer == NEURAL_OPTIMIZER_GRADIENT_DESCENT,
+          "legacy training configuration must default to gradient descent");
     check(neural_training_config_load("tests/fixtures/config_batch.txt",
                                       &config,
                                       &error) &&
@@ -296,6 +305,8 @@ static void test_valid_loaders(void)
               config.l2_regularization == 0.25 &&
               config.regularize_biases == 1,
           "regularization configuration must be parsed");
+    check(config.optimizer == NEURAL_OPTIMIZER_GRADIENT_DESCENT,
+          "optimizer configuration must be parsed");
     config.l1_regularization = 0.0;
     config.l2_regularization = 0.0;
     config.regularize_biases = 1;
@@ -400,6 +411,7 @@ static void test_invalid_configs(void)
         {"tests/fixtures/config_bad_clip.txt", "finite and non-negative"},
         {"tests/fixtures/config_bad_l1.txt", "finite and non-negative"},
         {"tests/fixtures/config_bad_regularize_biases.txt", "either 0 or 1"},
+        {"tests/fixtures/config_bad_optimizer.txt", "unknown optimizer"},
         {"tests/fixtures/config_unknown.txt", "unknown configuration property"}
     };
     size_t index;
@@ -523,7 +535,10 @@ static void test_project_initialization(void)
     NeuralModelSpec invalid_model = {0U, 1U, replacement_layers};
     NeuralTrainingConfig training = {
         500U, 0.125, UINT64_C(7), NEURAL_LOSS_MSE, 50U, 0U, 0.0,
-        3U, 1, 0.75, 0.125, 0.25, 1
+        3U, 1, 0.75, 0.125, 0.25, 1,
+        NEURAL_OPTIMIZER_GRADIENT_DESCENT, 0.0, 0.0, 0.0, 0.0,
+        NEURAL_LR_SCHEDULE_CONSTANT, 0.0, 0U, 0U, 0.0,
+        0.0, -1.0, 0U, 0.0
     };
     NeuralTrainingConfig incompatible_training = training;
     NeuralModelSpec loaded_model;
@@ -575,7 +590,8 @@ static void test_project_initialization(void)
               loaded_training.gradient_clip_norm == 0.75 &&
               loaded_training.l1_regularization == 0.125 &&
               loaded_training.l2_regularization == 0.25 &&
-              loaded_training.regularize_biases == 1,
+              loaded_training.regularize_biases == 1 &&
+              loaded_training.optimizer == NEURAL_OPTIMIZER_GRADIENT_DESCENT,
           "generated training values must round-trip");
 
     check(!neural_project_initialize(directory,

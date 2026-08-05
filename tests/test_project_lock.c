@@ -91,7 +91,9 @@ static void test_training_respects_project_lock(void)
 {
     NeuralProjectLock reader = NEURAL_PROJECT_LOCK_INITIALIZER;
     NeuralExecutionConfig execution = {1U};
-    NeuralTrainingResult result = {99U, 99U, 99.0, 99.0, 99.0, 99U};
+    NeuralTrainingResult result = {
+        99U, 99U, 99.0, 99.0, 99.0, 99U, NEURAL_TRAINING_IN_PROGRESS
+    };
     NeuralError error;
 
     check(neural_project_lock_acquire("projects/xor",

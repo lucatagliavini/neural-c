@@ -108,18 +108,18 @@
   - **9.5 — complete:** add deterministic L1/L2 regularization with explicit
     opt-in bias treatment, training-digest ownership, data-loss versus
     objective reporting, and ordering before norm measurement and clipping.
-- **Milestone 10 — optimizers and convergence control:**
-  - **10.1:** introduce a versioned optimizer abstraction while preserving the
+- **Milestone 10 — complete — optimizers and convergence control:**
+  - **10.1 — complete:** introduce a versioned optimizer abstraction while preserving the
     existing gradient-descent behavior and deterministic parameter traversal.
-  - **10.2:** add momentum and Adam with finite-state validation, checked update
+  - **10.2 — complete:** add momentum and Adam with finite-state validation, checked update
     arithmetic, and exact deterministic tests.
-  - **10.3:** version checkpoint persistence for optimizer buffers, schedule
+  - **10.3 — complete:** version checkpoint persistence for optimizer buffers, schedule
     state, and early-stopping state; retain explicit backward
     loading rules for version 1 gradient-descent and version 2 early-stopping
     checkpoints.
-  - **10.4:** add constant, step, exponential, and plateau-driven learning-rate
+  - **10.4 — complete:** add constant, step, exponential, and plateau-driven learning-rate
     schedules whose current value and next transition survive resume exactly.
-  - **10.5:** integrate divergence detection, minimum-loss targets, maximum
+  - **10.5 — complete:** integrate divergence detection, minimum-loss targets, maximum
     no-improvement limits, and clear completion reasons into training results
     and CLI output.
 - **Milestone 11 — regularized and structured models:**

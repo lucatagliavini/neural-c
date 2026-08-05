@@ -20,6 +20,17 @@ typedef struct {
     size_t additional_epochs;
 } NeuralTrainingRequest;
 
+typedef enum {
+    NEURAL_TRAINING_IN_PROGRESS,
+    NEURAL_TRAINING_TARGET_EPOCHS,
+    NEURAL_TRAINING_LOSS_TARGET,
+    NEURAL_TRAINING_NO_IMPROVEMENT,
+    NEURAL_TRAINING_EARLY_STOPPING
+} NeuralTrainingCompletionReason;
+
+const char *neural_training_completion_reason_name(
+    NeuralTrainingCompletionReason reason);
+
 typedef struct {
     size_t completed_epochs;
     neural_real loss;
@@ -31,6 +42,9 @@ typedef struct {
     int stopped_early;
     neural_real max_gradient_norm;
     size_t clipped_batch_count;
+    const NeuralOptimizer *optimizer;
+    neural_real learning_rate;
+    NeuralTrainingCompletionReason completion_reason;
 } NeuralEpochReport;
 
 #define NEURAL_EPOCH_OBSERVER_ERROR 0
@@ -48,6 +62,7 @@ typedef struct {
     neural_real final_objective;
     neural_real final_max_gradient_norm;
     size_t clipped_batch_count;
+    NeuralTrainingCompletionReason completion_reason;
 } NeuralTrainingResult;
 
 int neural_training_request_validate(const NeuralTrainingRequest *request,
@@ -69,6 +84,19 @@ int neural_model_train_range(
     const NeuralDataset *dataset,
     const NeuralTrainingConfig *training,
     const NeuralExecutionConfig *execution,
+    size_t completed_epochs,
+    size_t target_epochs,
+    NeuralEpochObserver observer,
+    void *observer_context,
+    NeuralTrainingResult *result,
+    NeuralError *error);
+
+int neural_model_train_range_with_optimizer(
+    NeuralModel *model,
+    const NeuralDataset *dataset,
+    const NeuralTrainingConfig *training,
+    const NeuralExecutionConfig *execution,
+    NeuralOptimizer *optimizer,
     size_t completed_epochs,
     size_t target_epochs,
     NeuralEpochObserver observer,

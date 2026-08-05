@@ -109,6 +109,34 @@ coefficients zero, absent legacy properties append nothing and retain the
 previous digest exactly. Penalties and objectives are derived values; no
 regularization buffer or mutable state is persisted.
 
+Milestone 10.1 also leaves payload versions unchanged. The canonical
+`gradient_descent` optimizer, whether explicit or selected by an absent legacy
+property, appends nothing to the historical training stream and keeps its
+digest unchanged. Checkpoints continue to record `optimizer
+gradient_descent`; resume additionally requires that identity to match the
+parsed project configuration. Abstraction version 1 owns no mutable buffers.
+
+Momentum and Adam append their canonical optimizer name and hyperparameters to
+the training stream. Non-constant schedules append their name, decay, and only
+the parameters relevant to that schedule. Enabled convergence control appends
+the divergence threshold, target loss, no-improvement limit, and minimum delta.
+Gradient descent with a constant schedule and all convergence controls disabled
+still appends nothing and preserves the historical digest exactly.
+
+Checkpoint version 3 is selected whenever continuation owns mutable optimizer,
+schedule, or convergence state. After common metadata it stores optimizer
+timestep; schedule identity, current rate, completed count, next transition,
+best/stale state; convergence best/stale/reason state; Adam beta powers; and the
+model-shaped Momentum or Adam buffers before the model payload. Early-stopping
+version 3 then stores both current and selected-best models as before. All
+values parse into staging storage and are validated before they become live.
+
+Version 1 gradient-descent checkpoints and version 2 early-stopping checkpoints
+remain readable only for the legacy stateless configuration they can fully
+represent. Version 3 is rejected when the configured optimizer or schedule
+identity differs. Successful loss-target and no-improvement stops use weights
+version 2 with the original target and explicit completion reason.
+
 ## Atomic Replacement
 
 Writers create a unique `*.tmp.XXXXXX` file beside the destination, write and
