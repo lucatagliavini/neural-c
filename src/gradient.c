@@ -589,6 +589,104 @@ int neural_gradient_scale(NeuralGradient *gradient,
     return 1;
 }
 
+static int norm_accumulate(neural_real value,
+                           neural_real *scale,
+                           neural_real *sum_squares)
+{
+    neural_real magnitude;
+    neural_real ratio;
+
+    if (!isfinite(value)) {
+        return 0;
+    }
+    magnitude = fabs(value);
+    if (magnitude == 0.0) {
+        return 1;
+    }
+    if (*scale < magnitude) {
+        ratio = *scale / magnitude;
+        *sum_squares = 1.0 + *sum_squares * ratio * ratio;
+        *scale = magnitude;
+    } else {
+        ratio = magnitude / *scale;
+        *sum_squares += ratio * ratio;
+    }
+    return isfinite(*scale) && isfinite(*sum_squares);
+}
+
+int neural_gradient_norm(const NeuralGradient *gradient,
+                         neural_real *norm,
+                         NeuralError *error)
+{
+    neural_real scale = 0.0;
+    neural_real sum_squares = 1.0;
+    neural_real result;
+    size_t layer_index;
+
+    if (gradient == NULL || norm == NULL) {
+        neural_error_set(error, "gradient and norm output are required");
+        return 0;
+    }
+    for (layer_index = 0U;
+         layer_index < gradient->layer_count;
+         layer_index++) {
+        const NeuralGradientLayer *layer = &gradient->layers[layer_index];
+        size_t index;
+
+        for (index = 0U; index < layer->weight_count; index++) {
+            if (!norm_accumulate(layer->weights[index],
+                                 &scale,
+                                 &sum_squares)) {
+                neural_error_set(error, "weight gradient norm is not finite");
+                return 0;
+            }
+        }
+        for (index = 0U; index < layer->bias_count; index++) {
+            if (!norm_accumulate(layer->biases[index],
+                                 &scale,
+                                 &sum_squares)) {
+                neural_error_set(error, "bias gradient norm is not finite");
+                return 0;
+            }
+        }
+    }
+    result = scale == 0.0 ? 0.0 : scale * sqrt(sum_squares);
+    if (!isfinite(result)) {
+        neural_error_set(error, "gradient norm exceeds the finite range");
+        return 0;
+    }
+    *norm = result;
+    return 1;
+}
+
+int neural_gradient_clip_norm(NeuralGradient *gradient,
+                              neural_real maximum_norm,
+                              neural_real *original_norm,
+                              int *clipped,
+                              NeuralError *error)
+{
+    neural_real norm;
+    int did_clip = 0;
+
+    if (gradient == NULL || original_norm == NULL || clipped == NULL ||
+        !isfinite(maximum_norm) || maximum_norm < 0.0) {
+        neural_error_set(error, "invalid gradient clipping arguments");
+        return 0;
+    }
+    if (!neural_gradient_norm(gradient, &norm, error)) {
+        return 0;
+    }
+    if (maximum_norm > 0.0 && norm > maximum_norm) {
+        if (!neural_gradient_scale(gradient, maximum_norm / norm, error)) {
+            return 0;
+        }
+        did_clip = 1;
+    }
+    *original_norm = norm;
+    *clipped = did_clip;
+    return 1;
+}
+
 int neural_model_apply_gradient(NeuralModel *model,
                                 const NeuralGradient *gradient,
                                 neural_real learning_rate,

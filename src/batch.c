@@ -3,7 +3,13 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "neural/random.h"
 #include "gradient_internal.h"
+
+struct NeuralSampleOrder {
+    size_t sample_count;
+    size_t *indices;
+};
 
 struct NeuralBatchAccumulator {
     NeuralGradient *gradient;
@@ -14,6 +20,129 @@ struct NeuralBatchAccumulator {
     int active;
     int finalized;
 };
+
+static uint64_t mix_uint64(uint64_t value)
+{
+    value = (value ^ (value >> 30U)) * UINT64_C(0xbf58476d1ce4e5b9);
+    value = (value ^ (value >> 27U)) * UINT64_C(0x94d049bb133111eb);
+    return value ^ (value >> 31U);
+}
+
+static uint64_t epoch_random_seed(uint64_t training_seed,
+                                  uint64_t epoch_index)
+{
+    const uint64_t domain = UINT64_C(0x6e657572616c2d73);
+    const uint64_t increment = UINT64_C(0x9e3779b97f4a7c15);
+
+    return mix_uint64((training_seed ^ domain) +
+                      increment * (epoch_index + UINT64_C(1)));
+}
+
+static uint64_t random_bounded(NeuralRandom *random, uint64_t bound)
+{
+    const uint64_t threshold = (UINT64_C(0) - bound) % bound;
+    uint64_t value;
+
+    do {
+        value = neural_random_next_uint64(random);
+    } while (value < threshold);
+    return value % bound;
+}
+
+int neural_sample_order_create(size_t sample_count,
+                               NeuralSampleOrder **order,
+                               NeuralError *error)
+{
+    NeuralSampleOrder *created;
+
+    if (order == NULL || sample_count == 0U ||
+        sample_count > SIZE_MAX / sizeof(*created->indices)) {
+        neural_error_set(error, "sample order requires a valid sample count");
+        return 0;
+    }
+    *order = NULL;
+    created = calloc(1U, sizeof(*created));
+    if (created == NULL) {
+        neural_error_set(error, "unable to allocate sample order");
+        return 0;
+    }
+    created->indices = malloc(sample_count * sizeof(*created->indices));
+    if (created->indices == NULL) {
+        neural_error_set(error, "unable to allocate sample-order indices");
+        free(created);
+        return 0;
+    }
+    created->sample_count = sample_count;
+    *order = created;
+    return 1;
+}
+
+void neural_sample_order_free(NeuralSampleOrder *order)
+{
+    if (order != NULL) {
+        free(order->indices);
+        free(order);
+    }
+}
+
+int neural_sample_order_prepare(NeuralSampleOrder *order,
+                                uint64_t training_seed,
+                                uint64_t epoch_index,
+                                int shuffle,
+                                NeuralError *error)
+{
+    size_t logical_index;
+
+    if (order == NULL || order->sample_count == 0U ||
+        order->indices == NULL || (shuffle != 0 && shuffle != 1)) {
+        neural_error_set(error, "invalid sample-order request");
+        return 0;
+    }
+    for (logical_index = 0U;
+         logical_index < order->sample_count;
+         logical_index++) {
+        order->indices[logical_index] = logical_index;
+    }
+    if (!shuffle) {
+        return 1;
+    }
+    {
+        NeuralRandom random;
+
+        neural_random_init(&random,
+                           epoch_random_seed(training_seed, epoch_index));
+        for (logical_index = order->sample_count;
+             logical_index > 1U;
+             logical_index--) {
+            size_t selected = (size_t)random_bounded(
+                &random, (uint64_t)logical_index);
+            size_t temporary = order->indices[logical_index - 1U];
+
+            order->indices[logical_index - 1U] = order->indices[selected];
+            order->indices[selected] = temporary;
+        }
+    }
+    return 1;
+}
+
+size_t neural_sample_order_count(const NeuralSampleOrder *order)
+{
+    return order == NULL ? 0U : order->sample_count;
+}
+
+int neural_sample_order_index(const NeuralSampleOrder *order,
+                              size_t logical_index,
+                              size_t *sample_index,
+                              NeuralError *error)
+{
+    if (order == NULL || order->indices == NULL || sample_index == NULL ||
+        logical_index >= order->sample_count) {
+        neural_error_set(error, "sample-order index is outside the plan");
+        return 0;
+    }
+    *sample_index = order->indices[logical_index];
+    return 1;
+}
 
 static int batch_plan_is_valid(const NeuralBatchPlan *plan)
 {

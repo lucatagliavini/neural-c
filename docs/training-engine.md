@@ -35,16 +35,16 @@ test fixtures whose perturbations remain on one differentiable branch.
 
 `batch_size` is training-owned configuration in `project.conf`. Zero selects
 the complete dataset and preserves the historical full-batch behavior. A
-positive value selects that many source-order samples per update; values above
-the dataset sample count resolve to the complete dataset. Samples are not yet
-shuffled. Each batch gradient is the ordered sum of its sample gradients
+positive value selects that many logical-order samples per update; values above
+the dataset sample count resolve to the complete dataset. Each batch gradient
+is the ordered sum of its sample gradients
 divided by the actual number of samples in that batch, including a smaller
 final batch. The main thread performs exactly one exclusive model update per
 batch.
 
 `NeuralBatchPlan` validates the resolved batch size and maps each batch to a
-contiguous half-open sample range. `NeuralBatchAccumulator` accepts gradients
-only in increasing global sample-index order. It owns one model-shaped
+contiguous half-open logical-position range. `NeuralBatchAccumulator` accepts
+gradients only in increasing logical-position order. It owns one model-shaped
 sum plus one compensation buffer, can be reset between batches, and exposes
 the gradient only after the declared `[begin, end)` range is complete and
 finalization has divided it by that range's sample count. Failed,
@@ -57,23 +57,75 @@ covered by the canonical training digest. Zero retains the legacy canonical
 stream exactly. Batch size is never treated like execution-only
 `thread_count`.
 
+`shuffle` is optional training-owned configuration. Absent or zero retains the
+identity source order exactly; one enables `splitmix64_fisher_yates_v1` once per
+epoch. `init --shuffle` materializes one. The trainer allocates one
+`NeuralSampleOrder`, resets it to `[0, sample_count)`, and applies descending
+Fisher-Yates for logical positions `sample_count - 1` through 1.
+
+The epoch-local SplitMix64 seed is derived using defined `uint64_t` arithmetic:
+
+```text
+domain = 0x6e657572616c2d73
+increment = 0x9e3779b97f4a7c15
+epoch_seed = splitmix64_mix(
+    (training_seed XOR domain) + increment * (absolute_epoch_index + 1))
+```
+
+The absolute epoch index is zero-based and equals `completed_epochs` at the
+start of a resumed range. For every Fisher-Yates bound `b`, draws below
+`(0 - b) % b` are rejected before `draw % b` is taken, avoiding modulo bias
+without architecture-specific integer extensions. The local stream neither
+reads nor changes the model initialization RNG state.
+
+## Gradient Norm and Clipping
+
+`gradient_clip_norm` is optional training-owned configuration in
+`project.conf`. Zero or an absent legacy property disables clipping and
+preserves the previous training digest and parameter updates exactly. A finite
+positive value is the maximum L2 norm and is covered by canonical training
+provenance. `init --gradient-clip-norm V` materializes the requested value.
+
+For every batch, the coordinator first completes ordered compensated reduction
+and division by the actual batch sample count. The norm then traverses every
+weight followed by every bias in model layer order. A scaled sum-of-squares
+calculation avoids avoidable intermediate overflow and underflow; a
+non-representable final norm fails before model mutation. The value reported is
+always this pre-clipping norm of the finalized mean batch gradient.
+
+When the norm is strictly greater than the positive configured maximum, every
+gradient component is transactionally multiplied by `maximum / norm`. Zero
+gradients and gradients exactly at the boundary are unchanged. An epoch report
+contains the maximum pre-clipping batch norm observed in that epoch and the
+number of clipped batches. The final training result contains the same values
+for its last completed epoch.
+
+The complete update order is: deterministic sample reduction and mean, future
+regularization contribution, norm measurement, clipping, future optimizer
+transformation, then the exclusive model update. Thus Milestone 9.5 must add L1
+or L2 terms before norm measurement, and Milestone 10 optimizers must consume
+the already clipped gradient. Worker threads never calculate norms, clip, or
+update parameters.
+
 ## Parallel Execution
 
 A `NeuralParallelExecutor` creates a persistent POSIX thread pool once per
 training run. Pool size is the smaller of the requested thread count and
 dataset sample count; each batch activates at most its own sample count.
 Workers execute deterministic waves containing at most one sample per worker.
-Each worker owns a `NeuralWorkerContext`, error, loss, sample index, and status.
+Each worker owns a `NeuralWorkerContext`, error, loss, logical position, source
+sample index, and status.
 `NeuralExecutionPlan` maps the current batch range to contiguous waves of
 at most the effective worker count; the final wave may be smaller.
 
 After every wave, the main thread accumulates completed gradients by increasing
-sample index into the batch accumulator. Worker buffers are then reused. This
-keeps gradient memory proportional to
+logical position into the batch accumulator. Worker buffers are then reused.
+This keeps gradient memory proportional to
 `(pool_size + 2) * parameter_count`, including the sum and compensation
 buffers. The arithmetic order remains independent of scheduling and thread
-count. Workers never update the model. Errors are selected by the lowest
-failing sample index. Cancellation is cooperative at task boundaries;
+count. Workers never update the model. Errors are selected by the earliest
+failing logical position and identify its source sample. Cancellation is
+cooperative at task boundaries;
 asynchronous thread cancellation is forbidden.
 
 The executor is driven by one coordinator. Its model and dataset must outlive

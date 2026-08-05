@@ -402,6 +402,8 @@ static void test_persistent_executor_equivalence(void)
     NeuralParallelExecutor *parallel = NULL;
     NeuralParallelExecutor *oversized = NULL;
     NeuralParallelExecutor *invalid = NULL;
+    NeuralSampleOrder *order = NULL;
+    NeuralSampleOrder *wrong_order = NULL;
     const NeuralGradient *serial_gradient = NULL;
     const NeuralGradient *parallel_gradient = NULL;
     const NeuralGradient *oversized_gradient = NULL;
@@ -461,7 +463,14 @@ static void test_persistent_executor_equivalence(void)
                                                NEURAL_LOSS_MSE,
                                                &oversized_config,
                                                &oversized,
-                                               &error);
+                                               &error) &&
+               neural_sample_order_create(7U, &order, &error) &&
+               neural_sample_order_prepare(order,
+                                           UINT64_C(31),
+                                           UINT64_C(4),
+                                           1,
+                                           &error) &&
+               neural_sample_order_create(6U, &wrong_order, &error);
     check(prepared, "persistent executors must be created");
     if (prepared) {
         check(neural_parallel_executor_worker_count(serial) == 1U &&
@@ -498,6 +507,26 @@ static void test_persistent_executor_equivalence(void)
                   gradients_equal(serial_gradient, parallel_gradient) &&
                   gradients_equal(serial_gradient, oversized_gradient),
               "persistent pool reuse must be independent of worker count");
+        check(neural_parallel_executor_ordered_batch_gradient(
+                  serial, order, 0U, 7U, &serial_gradient, &error) &&
+                  neural_parallel_executor_ordered_batch_gradient(
+                      parallel,
+                      order,
+                      0U,
+                      7U,
+                      &parallel_gradient,
+                      &error) &&
+                  gradients_equal(serial_gradient, parallel_gradient),
+              "ordered executor gradients must be bit-identical across workers");
+        check(!neural_parallel_executor_ordered_batch_gradient(
+                  serial,
+                  wrong_order,
+                  0U,
+                  6U,
+                  &serial_gradient,
+                  &error) &&
+                  serial_gradient == NULL,
+              "executor must reject an order for a different dataset");
         check(!neural_parallel_executor_batch_gradient(serial,
                                                        7U,
                                                        7U,
@@ -516,6 +545,8 @@ static void test_persistent_executor_equivalence(void)
                   count == 6U,
               "parallel gradient execution must not update the model");
     }
+    neural_sample_order_free(wrong_order);
+    neural_sample_order_free(order);
     neural_parallel_executor_free(invalid);
     neural_parallel_executor_free(oversized);
     neural_parallel_executor_free(parallel);

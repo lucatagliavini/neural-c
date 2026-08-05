@@ -109,6 +109,8 @@ enum option_index {
     OPTION_CHECKPOINT_INTERVAL,
     OPTION_EARLY_STOPPING_PATIENCE,
     OPTION_EARLY_STOPPING_MIN_DELTA,
+    OPTION_GRADIENT_CLIP_NORM,
+    OPTION_SHUFFLE,
     OPTION_RESUME,
     OPTION_ADDITIONAL_EPOCHS,
     OPTION_THREADS,
@@ -140,6 +142,8 @@ static const NeuralOptionDefinition option_definitions[OPTION_COUNT] = {
     {"checkpoint-interval", '\0', NEURAL_OPTION_VALUE, 0},
     {"early-stopping-patience", '\0', NEURAL_OPTION_VALUE, 0},
     {"early-stopping-min-delta", '\0', NEURAL_OPTION_VALUE, 0},
+    {"gradient-clip-norm", '\0', NEURAL_OPTION_VALUE, 0},
+    {"shuffle", '\0', NEURAL_OPTION_FLAG, 0},
     {"resume", '\0', NEURAL_OPTION_FLAG, 0},
     {"additional-epochs", '\0', NEURAL_OPTION_VALUE, 0},
     {"threads", 'j', NEURAL_OPTION_VALUE, 0},
@@ -185,6 +189,9 @@ static void print_usage(FILE *stream)
             "      --early-stopping-min-delta VALUE Minimum validation improvement\n"
             "      --batch-size N         Training batch; 0 uses full dataset\n"
             "                              Default: %zu\n"
+            "      --gradient-clip-norm V Maximum L2 norm; 0 disables\n"
+            "                              Default: %.*g\n"
+            "      --shuffle              Deterministic per-epoch shuffling\n"
             "\nTraining continuation:\n"
             "      --resume                Resume checkpoint.txt\n"
             "      --additional-epochs N  Refine weights.txt\n"
@@ -221,6 +228,8 @@ static void print_usage(FILE *stream)
             NEURAL_DEFAULT_INIT_LOSS,
             (size_t)NEURAL_DEFAULT_INIT_CHECKPOINT_INTERVAL,
             (size_t)NEURAL_DEFAULT_INIT_BATCH_SIZE,
+            DBL_DECIMAL_DIG,
+            (double)NEURAL_DEFAULT_INIT_GRADIENT_CLIP_NORM,
             (size_t)NEURAL_DEFAULT_THREAD_COUNT,
             (size_t)NEURAL_DEFAULT_REPORT_INTERVAL,
             (size_t)NEURAL_DEFAULT_PREDICTION_BATCH_SIZE);
@@ -292,13 +301,17 @@ static void write_training_history(TrainingProgress *progress,
         }
     }
     if (fprintf(progress->history,
-                "epoch %zu target %zu loss %.*g best %.*g",
+                "epoch %zu target %zu loss %.*g best %.*g "
+                "gradient_norm %.*g clipped_batches %zu",
                 report->completed_epochs,
                 report->target_epochs,
                 DBL_DECIMAL_DIG,
                 report->loss,
                 DBL_DECIMAL_DIG,
-                progress->best_loss) < 0 ||
+                progress->best_loss,
+                DBL_DECIMAL_DIG,
+                report->max_gradient_norm,
+                report->clipped_batch_count) < 0 ||
         (report->has_validation_loss &&
          fprintf(progress->history,
                  " validation_loss %.*g best_validation_loss %.*g",
@@ -326,7 +339,9 @@ static int report_training_progress(const NeuralEpochReport *report,
     if (report == NULL || progress == NULL || progress->interval == 0U ||
         report->completed_epochs == 0U || report->target_epochs == 0U ||
         report->completed_epochs > report->target_epochs ||
-        !isfinite(report->loss)) {
+        !isfinite(report->loss) ||
+        !isfinite(report->max_gradient_norm) ||
+        report->max_gradient_norm < 0.0) {
         neural_error_set(error, "training progress report is invalid");
         return 0;
     }
@@ -347,13 +362,17 @@ static int report_training_progress(const NeuralEpochReport *report,
         return 1;
     }
     if (fprintf(stderr,
-                "Training progress: epoch %zu/%zu, loss %.*g, best %.*g",
+                "Training progress: epoch %zu/%zu, loss %.*g, best %.*g, "
+                "gradient norm %.*g, clipped batches %zu",
                 report->completed_epochs,
                 report->target_epochs,
                 DBL_DECIMAL_DIG,
                 report->loss,
                 DBL_DECIMAL_DIG,
-                progress->best_loss) < 0) {
+                progress->best_loss,
+                DBL_DECIMAL_DIG,
+                report->max_gradient_norm,
+                report->clipped_batch_count) < 0) {
         neural_error_set(error, "unable to write training progress");
         return 0;
     }
@@ -517,7 +536,9 @@ static int command_init(const char *directory,
         NEURAL_DEFAULT_INIT_CHECKPOINT_INTERVAL,
         NEURAL_DEFAULT_INIT_EARLY_STOPPING_PATIENCE,
         NEURAL_DEFAULT_INIT_EARLY_STOPPING_MIN_DELTA,
-        NEURAL_DEFAULT_INIT_BATCH_SIZE
+        NEURAL_DEFAULT_INIT_BATCH_SIZE,
+        NEURAL_DEFAULT_INIT_SHUFFLE,
+        NEURAL_DEFAULT_INIT_GRADIENT_CLIP_NORM
     };
     NeuralError error;
     const char *loss_name;
@@ -623,6 +644,19 @@ static int command_init(const char *directory,
                            &training.batch_size)) {
         neural_error_set(&error,
                          "batch-size must be a non-negative integer for init");
+        goto invalid;
+    }
+    if (neural_option_is_present(options, OPTION_SHUFFLE)) {
+        training.shuffle = 1;
+    }
+    if (neural_option_is_present(options, OPTION_GRADIENT_CLIP_NORM) &&
+        (!neural_parse_real(
+             neural_option_value(options, OPTION_GRADIENT_CLIP_NORM),
+             &training.gradient_clip_norm) ||
+         training.gradient_clip_norm < 0.0)) {
+        neural_error_set(
+            &error,
+            "gradient-clip-norm must be finite and non-negative");
         goto invalid;
     }
     if (!neural_training_config_validate(&training, &error)) {
@@ -789,10 +823,14 @@ static int command_train(const char *directory,
             }
             return EXIT_RUNTIME;
         }
-        printf("Training complete: %zu epochs, loss %.*g, workers %zu\n",
+        printf("Training complete: %zu epochs, loss %.*g, gradient norm %.*g, "
+               "clipped batches %zu, workers %zu\n",
                result.completed_epochs,
                DBL_DECIMAL_DIG,
                result.final_loss,
+               DBL_DECIMAL_DIG,
+               result.final_max_gradient_norm,
+               result.clipped_batch_count,
                result.worker_count);
         return EXIT_OK;
     }
@@ -1602,6 +1640,14 @@ static int command_inspect(const char *directory, int include_state)
         printf("Batch size: full dataset\n");
     } else {
         printf("Batch size: %zu\n", project.training.batch_size);
+    }
+    printf("Shuffle: %s\n", project.training.shuffle ? "enabled" : "disabled");
+    if (project.training.gradient_clip_norm == 0.0) {
+        printf("Gradient clip norm: disabled\n");
+    } else {
+        printf("Gradient clip norm: %.*g\n",
+               DBL_DECIMAL_DIG,
+               project.training.gradient_clip_norm);
     }
     printf("Early stopping patience: %zu\n",
            project.training.early_stopping_patience);

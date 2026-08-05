@@ -54,8 +54,9 @@ values at compile time where possible.
 
 Protocol identity and version constants belong in `version.h`; public type
 sizes belong in the header that defines the type. Runtime behavior such as
-epochs, learning rate, loss, random seed, and training batch size must remain
-in project files.
+epochs, learning rate, loss, random seed, training batch size, and shuffle
+enablement must remain in project files. Gradient clipping is also training
+behavior and belongs there.
 Defaults used by `init` may be compile-time constants, but must be materialized
 in `project.conf`; training never reads hidden build defaults. Internal enum
 values, bit masks, array indexes, and
@@ -81,6 +82,17 @@ update per epoch and is also the default for legacy files that omit the
 property. A positive value creates deterministic contiguous mini-batches; the
 last batch may be smaller. This training-owned value must not be confused with
 the execution-only prediction `--batch-size` option.
+
+`shuffle` is also materialized by new initialization. Zero, including an absent
+legacy property, retains source order. One enables the versioned deterministic
+per-epoch algorithm in `training-engine.md`; `init --shuffle` selects it. Other
+values are invalid. Because it changes update arithmetic, enabled shuffle is
+training provenance rather than execution configuration.
+
+`gradient_clip_norm` is materialized by new initialization. Zero, including an
+absent legacy property, disables clipping. A finite positive value enables the
+L2 norm contract in `training-engine.md`; negative and non-finite values are
+invalid. `init --gradient-clip-norm V` configures it.
 
 ## Validation Policy
 

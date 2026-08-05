@@ -35,6 +35,8 @@ typedef struct {
     size_t early_stopping_patience;
     neural_real early_stopping_min_delta;
     size_t batch_size;
+    int shuffle;
+    neural_real gradient_clip_norm;
 } NeuralTrainingConfig;
 
 typedef struct {

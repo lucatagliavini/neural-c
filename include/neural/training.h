@@ -28,6 +28,8 @@ typedef struct {
     neural_real validation_loss;
     neural_real best_validation_loss;
     int stopped_early;
+    neural_real max_gradient_norm;
+    size_t clipped_batch_count;
 } NeuralEpochReport;
 
 #define NEURAL_EPOCH_OBSERVER_ERROR 0
@@ -42,6 +44,8 @@ typedef struct {
     size_t completed_epochs;
     size_t worker_count;
     neural_real final_loss;
+    neural_real final_max_gradient_norm;
+    size_t clipped_batch_count;
 } NeuralTrainingResult;
 
 int neural_training_request_validate(const NeuralTrainingRequest *request,

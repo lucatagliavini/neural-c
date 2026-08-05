@@ -215,6 +215,8 @@ static void test_project_digests(NeuralProject *project,
     neural_real original_input;
     size_t original_epochs;
     size_t original_batch_size;
+    int original_shuffle;
+    neural_real original_gradient_clip_norm;
     NeuralLoss original_loss;
     NeuralError error;
 
@@ -259,6 +261,24 @@ static void test_project_digests(NeuralProject *project,
               strcmp(changed.model, digests->model) == 0,
           "mini-batch size must affect only training provenance");
     project->training.batch_size = original_batch_size;
+
+    original_shuffle = project->training.shuffle;
+    project->training.shuffle = 1;
+    check(neural_project_digests_compute(project, &changed, &error) &&
+              strcmp(changed.training, digests->training) != 0 &&
+              strcmp(changed.dataset, digests->dataset) == 0 &&
+              strcmp(changed.model, digests->model) == 0,
+          "epoch shuffle must affect only training provenance");
+    project->training.shuffle = original_shuffle;
+
+    original_gradient_clip_norm = project->training.gradient_clip_norm;
+    project->training.gradient_clip_norm = 0.75;
+    check(neural_project_digests_compute(project, &changed, &error) &&
+              strcmp(changed.training, digests->training) != 0 &&
+              strcmp(changed.dataset, digests->dataset) == 0 &&
+              strcmp(changed.model, digests->model) == 0,
+          "gradient clipping must affect only training provenance");
+    project->training.gradient_clip_norm = original_gradient_clip_norm;
 
     original_loss = project->training.loss;
     project->training.loss = NEURAL_LOSS_BINARY_CROSS_ENTROPY;

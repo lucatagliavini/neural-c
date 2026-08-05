@@ -98,11 +98,13 @@
   - **9.2 — complete:** expose deterministic mini-batch size as training-owned
     configuration covered by canonical provenance, including incomplete final
     batches and exact continuation semantics.
-  - **9.3:** add deterministic per-epoch shuffling with a specified PRNG stream,
-    stable sample-order plans across thread counts, and sufficient checkpoint
-    state for exact resume.
-  - **9.4:** add gradient norm reporting and configurable clipping with explicit
-    ordering relative to reduction, regularization, and optimizer updates.
+  - **9.3 — complete:** add opt-in deterministic per-epoch shuffling with a
+    specified unbiased SplitMix64/Fisher-Yates stream, stable logical
+    sample-order plans across thread counts, digest ownership, and exact resume
+    through absolute-epoch regeneration without new checkpoint state.
+  - **9.4 — complete:** add stable pre-clipping L2 gradient norm reporting and
+    configurable deterministic clipping after ordered batch reduction, with
+    explicit future regularization and optimizer ordering.
   - **9.5:** add L1 and L2 regularization with documented bias treatment,
     training-digest ownership, and consistent objective reporting.
 - **Milestone 10 — optimizers and convergence control:**
@@ -111,7 +113,7 @@
   - **10.2:** add momentum and Adam with finite-state validation, checked update
     arithmetic, and exact deterministic tests.
   - **10.3:** version checkpoint persistence for optimizer buffers, schedule
-    state, shuffle state, and early-stopping state; retain explicit backward
+    state, and early-stopping state; retain explicit backward
     loading rules for version 1 gradient-descent and version 2 early-stopping
     checkpoints.
   - **10.4:** add constant, step, exponential, and plateau-driven learning-rate

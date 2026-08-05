@@ -75,6 +75,12 @@ static void test_core_contract(void)
           "default execution thread count must be positive");
     check(NEURAL_DEFAULT_PREDICTION_BATCH_SIZE >= 1U,
           "default prediction batch size must be positive");
+    check(NEURAL_DEFAULT_INIT_SHUFFLE == 0 ||
+              NEURAL_DEFAULT_INIT_SHUFFLE == 1,
+          "default training shuffle must be either zero or one");
+    check(isfinite(NEURAL_DEFAULT_INIT_GRADIENT_CLIP_NORM) &&
+              NEURAL_DEFAULT_INIT_GRADIENT_CLIP_NORM >= 0.0,
+          "default gradient clip norm must be finite and non-negative");
     check(isfinite(NEURAL_DEFAULT_GRADIENT_CHECK_EPSILON) &&
               NEURAL_DEFAULT_GRADIENT_CHECK_EPSILON > 0.0,
           "default gradient-check epsilon must be positive and finite");
@@ -261,11 +267,19 @@ static void test_valid_loaders(void)
           "checkpoint interval must be parsed");
     check(config.batch_size == 0U,
           "legacy training configuration must default to full-batch");
+    check(config.shuffle == 0,
+          "legacy training configuration must default to source order");
+    check(config.gradient_clip_norm == 0.0,
+          "legacy training configuration must default to unclipped gradients");
     check(neural_training_config_load("tests/fixtures/config_batch.txt",
                                       &config,
                                       &error) &&
               config.batch_size == 3U,
           "positive mini-batch size must be parsed");
+    check(config.shuffle == 1,
+          "enabled deterministic shuffle must be parsed");
+    check(config.gradient_clip_norm == 0.75,
+          "positive gradient clipping norm must be parsed");
     check(neural_training_config_load(
               "tests/fixtures/config_zero_checkpoint.txt",
               &config,
@@ -360,6 +374,8 @@ static void test_invalid_configs(void)
         {"tests/fixtures/config_nan.txt", "finite and positive"},
         {"tests/fixtures/config_zero_epochs.txt", "positive integer"},
         {"tests/fixtures/config_bad_batch.txt", "non-negative integer"},
+        {"tests/fixtures/config_bad_shuffle.txt", "either 0 or 1"},
+        {"tests/fixtures/config_bad_clip.txt", "finite and non-negative"},
         {"tests/fixtures/config_unknown.txt", "unknown configuration property"}
     };
     size_t index;
@@ -482,7 +498,8 @@ static void test_project_initialization(void)
     NeuralModelSpec replacement_model = {2U, 1U, replacement_layers};
     NeuralModelSpec invalid_model = {0U, 1U, replacement_layers};
     NeuralTrainingConfig training = {
-        500U, 0.125, UINT64_C(7), NEURAL_LOSS_MSE, 50U, 0U, 0.0, 3U
+        500U, 0.125, UINT64_C(7), NEURAL_LOSS_MSE, 50U, 0U, 0.0,
+        3U, 1, 0.75
     };
     NeuralTrainingConfig incompatible_training = training;
     NeuralModelSpec loaded_model;
@@ -529,7 +546,9 @@ static void test_project_initialization(void)
     check(loaded_training.epochs == 500U &&
               loaded_training.learning_rate == 0.125 &&
               loaded_training.checkpoint_interval == 50U &&
-              loaded_training.batch_size == 3U,
+              loaded_training.batch_size == 3U &&
+              loaded_training.shuffle == 1 &&
+              loaded_training.gradient_clip_norm == 0.75,
           "generated training values must round-trip");
 
     check(!neural_project_initialize(directory,

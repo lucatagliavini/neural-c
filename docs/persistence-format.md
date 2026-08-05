@@ -65,8 +65,10 @@ checkpoint interval. A zero checkpoint interval canonically represents
 disabled periodic saves. A positive `batch_size` appends the `mini_batch`
 marker and configured value to the training stream before optional
 early-stopping state. Zero or an absent legacy property selects full-batch and
-preserves the historical training digest exactly. When early stopping is
-enabled, the stream also
+preserves the historical training digest exactly. Enabled `shuffle` then
+appends `epoch_shuffle` and `splitmix64_fisher_yates_v1`; disabled or absent
+shuffle appends nothing and retains the previous canonical stream. When early
+stopping is enabled, the stream also
 contains its patience/minimum delta and the canonical validation digest.
 Disabled early stopping preserves the version 1 training digest exactly.
 When `preprocessing.txt` is present, the dataset digest additionally binds its
@@ -87,6 +89,17 @@ Loss/output/target rules are defined in `losses.md`.
 Milestone 9.2 does not change weights or checkpoint payload versions. Batch
 boundaries are derived from the digest-bound project configuration, and
 checkpoints remain coherent completed-epoch snapshots.
+
+Milestone 9.3 likewise leaves payload versions unchanged. The shuffled order is
+regenerated from the digest-owned training seed and absolute completed-epoch
+boundary, so neither checkpoint format stores shuffle PRNG state nor a sample
+permutation. The existing `rng_state` remains model-initialization provenance.
+
+Milestone 9.4 also leaves payload versions unchanged. A positive
+`gradient_clip_norm` appends that marker and its canonical binary64 value after
+optional shuffle provenance and before optional early-stopping provenance.
+Zero or an absent property appends nothing. Norms and clipping counts are
+derived telemetry rather than mutable continuation state and are not persisted.
 
 ## Atomic Replacement
 

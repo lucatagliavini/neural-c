@@ -89,7 +89,9 @@ static int write_project(FILE *stream, const NeuralTrainingConfig *training)
                    "checkpoint_interval %zu\n"
                    "early_stopping_patience %zu\n"
                    "early_stopping_min_delta %.*g\n"
-                   "batch_size %zu\n",
+                   "batch_size %zu\n"
+                   "shuffle %d\n"
+                   "gradient_clip_norm %.*g\n",
                    NEURAL_FORMAT_MAGIC,
                    NEURAL_FORMAT_VERSION,
                    training->epochs,
@@ -101,7 +103,10 @@ static int write_project(FILE *stream, const NeuralTrainingConfig *training)
                    training->early_stopping_patience,
                    DBL_DECIMAL_DIG,
                    training->early_stopping_min_delta,
-                   training->batch_size) >= 0;
+                   training->batch_size,
+                   training->shuffle,
+                   DBL_DECIMAL_DIG,
+                   training->gradient_clip_norm) >= 0;
 }
 
 static int write_dataset(FILE *stream, const NeuralModelSpec *model)

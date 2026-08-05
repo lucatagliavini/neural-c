@@ -13,6 +13,7 @@ typedef struct {
     struct NeuralParallelExecutor *executor;
     NeuralWorkerContext *context;
     pthread_t thread;
+    size_t logical_index;
     size_t sample_index;
     neural_real loss;
     NeuralError error;
@@ -301,11 +302,12 @@ size_t neural_parallel_executor_worker_count(
 }
 
 static int executor_dispatch_wave(NeuralParallelExecutor *executor,
-                                  size_t sample_begin,
-                                  size_t sample_end,
+                                  const NeuralSampleOrder *order,
+                                  size_t logical_begin,
+                                  size_t logical_end,
                                   NeuralError *error)
 {
-    size_t wave_sample_count = sample_end - sample_begin;
+    size_t wave_sample_count = logical_end - logical_begin;
     size_t worker_index;
     int code;
 
@@ -322,7 +324,16 @@ static int executor_dispatch_wave(NeuralParallelExecutor *executor,
          worker_index++) {
         NeuralExecutorWorker *worker = &executor->workers[worker_index];
 
-        worker->sample_index = sample_begin + worker_index;
+        worker->logical_index = logical_begin + worker_index;
+        if (order == NULL) {
+            worker->sample_index = worker->logical_index;
+        } else if (!neural_sample_order_index(order,
+                                              worker->logical_index,
+                                              &worker->sample_index,
+                                              error)) {
+            (void)pthread_mutex_unlock(&executor->mutex);
+            return 0;
+        }
         worker->assigned = 1;
         worker->success = 0;
     }
@@ -350,12 +361,23 @@ static int executor_dispatch_wave(NeuralParallelExecutor *executor,
             &executor->workers[worker_index];
 
         if (!worker->success) {
-            neural_error_set(error,
-                             "sample %zu failed: %s",
-                             worker->sample_index,
-                             worker->error.message[0] == '\0'
-                                 ? "worker reported no detail"
-                                 : worker->error.message);
+            const char *detail = worker->error.message[0] == '\0'
+                                     ? "worker reported no detail"
+                                     : worker->error.message;
+
+            if (order == NULL) {
+                neural_error_set(error,
+                                 "sample %zu failed: %s",
+                                 worker->sample_index,
+                                 detail);
+            } else {
+                neural_error_set(
+                    error,
+                    "sample %zu at logical position %zu failed: %s",
+                    worker->sample_index,
+                    worker->logical_index,
+                    detail);
+            }
             return 0;
         }
     }
@@ -366,7 +388,7 @@ static int executor_dispatch_wave(NeuralParallelExecutor *executor,
 
         if (!neural_batch_accumulator_add(
                 executor->accumulator,
-                worker->sample_index,
+                worker->logical_index,
                 neural_worker_context_gradient(worker->context),
                 error)) {
             return 0;
@@ -375,10 +397,11 @@ static int executor_dispatch_wave(NeuralParallelExecutor *executor,
     return 1;
 }
 
-int neural_parallel_executor_batch_gradient(
+int neural_parallel_executor_ordered_batch_gradient(
     NeuralParallelExecutor *executor,
-    size_t sample_begin,
-    size_t sample_end,
+    const NeuralSampleOrder *order,
+    size_t logical_begin,
+    size_t logical_end,
     const NeuralGradient **gradient,
     NeuralError *error)
 {
@@ -391,8 +414,10 @@ int neural_parallel_executor_batch_gradient(
         return 0;
     }
     *gradient = NULL;
-    if (executor == NULL || sample_begin >= sample_end ||
-        sample_end > executor->dataset->sample_count) {
+    if (executor == NULL || logical_begin >= logical_end ||
+        logical_end > executor->dataset->sample_count ||
+        (order != NULL &&
+         neural_sample_order_count(order) != executor->dataset->sample_count)) {
         neural_error_set(error, "batch range is outside the executor dataset");
         return 0;
     }
@@ -401,14 +426,14 @@ int neural_parallel_executor_batch_gradient(
         return 0;
     }
     config.thread_count = executor->worker_count;
-    if (!neural_execution_plan_create(sample_begin,
-                                      sample_end,
+    if (!neural_execution_plan_create(logical_begin,
+                                      logical_end,
                                       &config,
                                       &plan,
                                       error) ||
         !neural_batch_accumulator_reset(executor->accumulator,
-                                        sample_begin,
-                                        sample_end,
+                                        logical_begin,
+                                        logical_end,
                                         error)) {
         return 0;
     }
@@ -422,6 +447,7 @@ int neural_parallel_executor_batch_gradient(
                                               &wave_end,
                                               error) ||
             !executor_dispatch_wave(executor,
+                                    order,
                                     wave_begin,
                                     wave_end,
                                     error)) {
@@ -433,4 +459,19 @@ int neural_parallel_executor_batch_gradient(
     }
     *gradient = neural_batch_accumulator_gradient(executor->accumulator);
     return *gradient != NULL;
+}
+
+int neural_parallel_executor_batch_gradient(
+    NeuralParallelExecutor *executor,
+    size_t sample_begin,
+    size_t sample_end,
+    const NeuralGradient **gradient,
+    NeuralError *error)
+{
+    return neural_parallel_executor_ordered_batch_gradient(executor,
+                                                           NULL,
+                                                           sample_begin,
+                                                           sample_end,
+                                                           gradient,
+                                                           error);
 }

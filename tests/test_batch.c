@@ -144,6 +144,108 @@ static void test_batch_plan(void)
           "invalid plans, indices, and outputs must be rejected");
 }
 
+static void test_sample_order(void)
+{
+    const size_t expected[] = {
+        15U, 3U, 8U, 6U, 10U, 7U, 4U, 2U, 16U,
+        14U, 1U, 9U, 0U, 11U, 13U, 12U, 5U
+    };
+    NeuralSampleOrder *order = NULL;
+    NeuralSampleOrder *repeated = NULL;
+    NeuralError error;
+    size_t first[17];
+    size_t second[17];
+    unsigned char seen[17] = {0};
+    size_t index;
+    size_t sample_index;
+    int prepared;
+
+    check(!neural_sample_order_create(0U, &order, &error) &&
+              !neural_sample_order_create(1U, NULL, &error),
+          "sample order must reject invalid creation arguments");
+    prepared = neural_sample_order_create(17U, &order, &error) &&
+               neural_sample_order_create(17U, &repeated, &error);
+    check(prepared, "sample-order fixtures must be allocated");
+    if (prepared) {
+        check(neural_sample_order_count(order) == 17U &&
+                  neural_sample_order_prepare(order,
+                                              UINT64_C(42),
+                                              UINT64_C(0),
+                                              0,
+                                              &error),
+              "disabled shuffle must prepare a complete identity plan");
+        for (index = 0U; index < 17U; index++) {
+            check(neural_sample_order_index(order,
+                                            index,
+                                            &sample_index,
+                                            &error) &&
+                      sample_index == index,
+                  "disabled shuffle must retain source order");
+        }
+        check(!neural_sample_order_prepare(order,
+                                           UINT64_C(42),
+                                           UINT64_C(0),
+                                           2,
+                                           &error) &&
+                  !neural_sample_order_index(order,
+                                             17U,
+                                             &sample_index,
+                                             &error) &&
+                  !neural_sample_order_index(NULL,
+                                             0U,
+                                             &sample_index,
+                                             &error),
+              "sample order must reject invalid requests");
+        check(neural_sample_order_prepare(order,
+                                          UINT64_C(42),
+                                          UINT64_C(0),
+                                          1,
+                                          &error) &&
+                  neural_sample_order_prepare(repeated,
+                                              UINT64_C(42),
+                                              UINT64_C(0),
+                                              1,
+                                              &error),
+              "shuffle must prepare repeated epoch plans");
+        for (index = 0U; index < 17U; index++) {
+            if (neural_sample_order_index(order,
+                                          index,
+                                          &first[index],
+                                          &error) &&
+                neural_sample_order_index(repeated,
+                                          index,
+                                          &second[index],
+                                          &error) &&
+                first[index] < 17U) {
+                seen[first[index]] = 1U;
+            }
+        }
+        check(memcmp(first, expected, sizeof(expected)) == 0 &&
+                  memcmp(first, second, sizeof(first)) == 0,
+              "epoch zero shuffle must match the portable reference plan");
+        for (index = 0U; index < 17U; index++) {
+            check(seen[index] != 0U,
+                  "shuffle plan must contain every source sample once");
+        }
+        check(neural_sample_order_prepare(repeated,
+                                          UINT64_C(42),
+                                          UINT64_C(1),
+                                          1,
+                                          &error),
+              "next absolute epoch plan must be generated");
+        for (index = 0U; index < 17U; index++) {
+            (void)neural_sample_order_index(repeated,
+                                            index,
+                                            &second[index],
+                                            &error);
+        }
+        check(memcmp(first, second, sizeof(first)) != 0,
+              "different absolute epochs must produce different plans");
+    }
+    neural_sample_order_free(repeated);
+    neural_sample_order_free(order);
+}
+
 static void test_batch_accumulator(void)
 {
     NeuralLayerSpec layer = {
@@ -334,11 +436,91 @@ static void test_transactional_gradient_add(void)
     neural_model_free(model);
 }
 
+static void test_gradient_norm_and_clipping(void)
+{
+    NeuralLayerSpec layer = {
+        1U, {NEURAL_ACTIVATION_LINEAR, 0U, NULL}
+    };
+    NeuralModelSpec spec = {1U, 1U, &layer};
+    NeuralModel *model = NULL;
+    NeuralGradient *gradient = NULL;
+    NeuralError error;
+    neural_real *weight;
+    neural_real *bias;
+    neural_real norm = -1.0;
+    int clipped = -1;
+    int prepared;
+
+    prepared = neural_model_create(&spec, UINT64_C(25), &model, &error) &&
+               neural_gradient_create(model, &gradient, &error);
+    check(prepared, "gradient norm fixture must be prepared");
+    if (prepared) {
+        weight = neural_gradient_layer_weights(gradient, 0U, NULL);
+        bias = neural_gradient_layer_biases(gradient, 0U, NULL);
+        weight[0] = 3.0;
+        bias[0] = 4.0;
+        check(neural_gradient_norm(gradient, &norm, &error) && norm == 5.0,
+              "gradient L2 norm must include weights and biases");
+        check(neural_gradient_clip_norm(gradient,
+                                        0.0,
+                                        &norm,
+                                        &clipped,
+                                        &error) &&
+                  norm == 5.0 && clipped == 0 &&
+                  weight[0] == 3.0 && bias[0] == 4.0,
+              "zero clipping threshold must report without mutation");
+        check(neural_gradient_clip_norm(gradient,
+                                        5.0,
+                                        &norm,
+                                        &clipped,
+                                        &error) &&
+                  norm == 5.0 && clipped == 0 &&
+                  weight[0] == 3.0 && bias[0] == 4.0,
+              "gradient exactly at the threshold must not be clipped");
+        check(neural_gradient_clip_norm(gradient,
+                                        2.5,
+                                        &norm,
+                                        &clipped,
+                                        &error) &&
+                  norm == 5.0 && clipped == 1 &&
+                  weight[0] == 1.5 && bias[0] == 2.0 &&
+                  neural_gradient_norm(gradient, &norm, &error) &&
+                  norm == 2.5,
+              "gradient above the threshold must scale to the maximum norm");
+        check(neural_gradient_zero(gradient, &error) &&
+                  neural_gradient_clip_norm(gradient,
+                                            1.0,
+                                            &norm,
+                                            &clipped,
+                                            &error) &&
+                  norm == 0.0 && clipped == 0,
+              "zero gradient must have zero norm and remain unclipped");
+        weight[0] = DBL_MAX;
+        bias[0] = DBL_MAX;
+        check(!neural_gradient_norm(gradient, &norm, &error) &&
+                  weight[0] == DBL_MAX && bias[0] == DBL_MAX,
+              "unrepresentable gradient norm must fail without mutation");
+        weight[0] = 1.0;
+        bias[0] = 1.0;
+        check(!neural_gradient_clip_norm(gradient,
+                                         -1.0,
+                                         &norm,
+                                         &clipped,
+                                         &error) &&
+                  weight[0] == 1.0 && bias[0] == 1.0,
+              "invalid clipping threshold must fail without mutation");
+    }
+    neural_gradient_free(gradient);
+    neural_model_free(model);
+}
+
 int main(void)
 {
     test_batch_plan();
+    test_sample_order();
     test_batch_accumulator();
     test_transactional_gradient_add();
+    test_gradient_norm_and_clipping();
 
     if (failures != 0) {
         fprintf(stderr, "%d batch test(s) failed\n", failures);

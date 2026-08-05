@@ -107,5 +107,9 @@ The matrix also imports, trains, and predicts an independently created
 softmax/categorical-cross-entropy project on both architectures. Its canonical
 training digest is exact and its predictions use the floating-point tolerance
 above. That fixture uses a training batch size that leaves an incomplete final
-batch, covering deterministic mini-batch execution and persistence provenance
-on both runtimes.
+batch and enables deterministic epoch shuffling, covering portable sample-order
+generation, mini-batch execution, and persistence provenance on both runtimes.
+The bidirectional interrupted-resume fixtures also enable shuffle, proving that
+neither architecture needs additional mutable checkpoint state. Those fixtures
+also configure gradient clipping; the categorical fixture exercises norm
+calculation and clipping beside shuffle and an incomplete final batch.

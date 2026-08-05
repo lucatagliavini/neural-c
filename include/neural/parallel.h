@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 
+#include "neural/batch.h"
 #include "neural/error.h"
 #include "neural/gradient.h"
 #include "neural/model.h"
@@ -62,6 +63,16 @@ int neural_parallel_executor_batch_gradient(
     NeuralParallelExecutor *executor,
     size_t sample_begin,
     size_t sample_end,
+    const NeuralGradient **gradient,
+    NeuralError *error);
+
+/* The half-open range addresses logical positions in a complete order whose
+ * sample count matches the executor dataset. Reduction follows that range. */
+int neural_parallel_executor_ordered_batch_gradient(
+    NeuralParallelExecutor *executor,
+    const NeuralSampleOrder *order,
+    size_t logical_begin,
+    size_t logical_end,
     const NeuralGradient **gradient,
     NeuralError *error);
 

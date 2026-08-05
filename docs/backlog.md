@@ -4,35 +4,26 @@ This file records work that is ready or intentionally deferred beyond the
 completed items in `roadmap.md`. The session handoff identifies the active
 entry to resume.
 
-## Next session — Milestone 9.3
+## Next session — Milestone 9.5
 
 **Status:** ready to start in the next session.
 
-**Goal:** add deterministic per-epoch sample shuffling without changing
-results across worker counts or breaking exact checkpoint continuation.
+**Goal:** add configurable L1 and L2 regularization with explicit bias,
+objective-reporting, clipping-order, provenance, and continuation semantics.
 
-1. Specify the shuffle contract before implementation:
-   - the exact PRNG algorithm and seed/absolute-epoch derivation;
-   - Fisher-Yates traversal and unbiased bounded-index generation;
-   - whether the plan is regenerated from absolute epoch identity or requires
-     persisted mutable state;
-   - compatibility and digest/version consequences for existing persistence.
-2. Introduce an epoch sample-order plan that is independent of worker count and
-   partitions the shuffled order into the existing deterministic mini-batches.
-3. Preserve ordered gradient reduction according to the logical epoch plan,
-   while workers remain scheduling-only execution resources.
-4. Make fresh, resumed, and additional training produce the same epoch plans
-   for the same absolute epoch numbers.
-5. Add deterministic tests for:
-   - repeated plans and distinct epoch plans;
-   - one and many workers;
-   - full and incomplete final batches;
-   - continuous versus checkpoint-resumed training;
-   - x86-64 and emulated ppc64le persistence exchange.
-6. Update the authoritative training, parallel, persistence, continuation,
-   runtime-validation, specification, README, roadmap, and session handoff
-   documents.
-7. Qualify with `make check`, `make test-sanitize`,
+1. Specify the exact L1/L2 objective convention, coefficient scaling, and
+   whether biases are excluded by default or controlled explicitly.
+2. Add regularization to the finalized mean data gradient before norm
+   measurement and clipping, preserving deterministic parameter traversal and
+   the Milestone 9.4 update contract.
+3. Define whether training, validation, and test loss report the data loss or
+   regularized objective, and expose any additional metric without ambiguity.
+4. Treat enabled regularization as training-owned digest provenance while
+   leaving disabled legacy streams and persistence payload versions unchanged.
+5. Add analytic-gradient, finite-difference, zero/disabled, bias-policy,
+   clipping-interaction, worker-count, resume, and cross-runtime coverage.
+6. Update authoritative contracts and qualify with `make check`,
+   `make test-sanitize`,
    `make test-thread-sanitize`, and `make check-cross-runtime`.
 
 ## Deferred technical note
@@ -44,6 +35,4 @@ results across worker counts or breaking exact checkpoint continuation.
 
 ## Later roadmap
 
-- Continue with Milestone 9.4 gradient norms and clipping after 9.3 is complete.
-- Milestone 9.5 adds L1/L2 regularization.
 - Optimizer and convergence work remains grouped under Milestone 10.

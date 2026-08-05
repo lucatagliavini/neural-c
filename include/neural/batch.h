@@ -2,6 +2,7 @@
 #define NEURAL_BATCH_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "neural/error.h"
 #include "neural/gradient.h"
@@ -14,6 +15,24 @@ typedef struct {
 } NeuralBatchPlan;
 
 typedef struct NeuralBatchAccumulator NeuralBatchAccumulator;
+typedef struct NeuralSampleOrder NeuralSampleOrder;
+
+/* The order owns one source index per logical position. Preparation is a pure
+ * function of the training seed, zero-based absolute epoch, and shuffle flag. */
+int neural_sample_order_create(size_t sample_count,
+                               NeuralSampleOrder **order,
+                               NeuralError *error);
+void neural_sample_order_free(NeuralSampleOrder *order);
+int neural_sample_order_prepare(NeuralSampleOrder *order,
+                                uint64_t training_seed,
+                                uint64_t epoch_index,
+                                int shuffle,
+                                NeuralError *error);
+size_t neural_sample_order_count(const NeuralSampleOrder *order);
+int neural_sample_order_index(const NeuralSampleOrder *order,
+                              size_t logical_index,
+                              size_t *sample_index,
+                              NeuralError *error);
 
 int neural_batch_plan_create(size_t sample_count,
                              size_t batch_size,

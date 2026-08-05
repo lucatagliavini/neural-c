@@ -375,6 +375,17 @@ int neural_training_config_validate(const NeuralTrainingConfig *config,
                          "early_stopping_min_delta requires positive patience");
         return 0;
     }
+    if (config->shuffle != 0 && config->shuffle != 1) {
+        neural_error_set(error, "shuffle must be either 0 or 1");
+        return 0;
+    }
+    if (!isfinite(config->gradient_clip_norm) ||
+        config->gradient_clip_norm < 0.0) {
+        neural_error_set(
+            error,
+            "gradient_clip_norm must be finite and non-negative");
+        return 0;
+    }
     return 1;
 }
 
@@ -691,6 +702,8 @@ int neural_training_config_load(const char *path,
         FIELD_EARLY_PATIENCE = 32U,
         FIELD_EARLY_MIN_DELTA = 64U,
         FIELD_BATCH_SIZE = 128U,
+        FIELD_SHUFFLE = 256U,
+        FIELD_GRADIENT_CLIP_NORM = 512U,
         REQUIRED_FIELDS = FIELD_EPOCHS | FIELD_RATE | FIELD_SEED | FIELD_LOSS |
                           FIELD_CHECKPOINT_INTERVAL,
         EARLY_FIELDS = FIELD_EARLY_PATIENCE | FIELD_EARLY_MIN_DELTA
@@ -823,6 +836,33 @@ int neural_training_config_load(const char *path,
                 neural_error_set(
                     error,
                     "%s:%zu: batch_size must be a non-negative integer",
+                    path,
+                    line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "shuffle") == 0) {
+            field = FIELD_SHUFFLE;
+            if (strcmp(tokens.items[1], "0") == 0) {
+                config->shuffle = 0;
+            } else if (strcmp(tokens.items[1], "1") == 0) {
+                config->shuffle = 1;
+            } else {
+                neural_error_set(
+                    error,
+                    "%s:%zu: shuffle must be either 0 or 1",
+                    path,
+                    line_number);
+                goto cleanup;
+            }
+        } else if (strcmp(tokens.items[0], "gradient_clip_norm") == 0) {
+            field = FIELD_GRADIENT_CLIP_NORM;
+            if (!neural_parse_real(tokens.items[1],
+                                   &config->gradient_clip_norm) ||
+                config->gradient_clip_norm < 0.0) {
+                neural_error_set(
+                    error,
+                    "%s:%zu: gradient_clip_norm must be finite and "
+                    "non-negative",
                     path,
                     line_number);
                 goto cleanup;

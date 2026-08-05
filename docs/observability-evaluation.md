@@ -20,7 +20,8 @@ enabled; test data deliberately does not affect persistence provenance.
 
 `train --report-interval N` is execution-only. Zero disables reporting. A
 positive interval reports absolute epoch/target, training loss, convergence
-loss, best loss, and absolute/relative change. The target epoch is always
+loss, best loss, absolute/relative change, maximum pre-clipping batch gradient
+norm, and clipped batch count. The target epoch is always
 reported, as is an earlier patience boundary. With early stopping, convergence
 means validation loss and both current and selected-best validation loss are
 shown. Reporting does not alter checkpoint scheduling, numerical reduction,
@@ -30,6 +31,9 @@ project files, or canonical digests.
 Fresh training replaces it; resume and refinement append. History is flushed
 after each row but remains diagnostic: an open or write failure emits a warning
 and does not fail training or affect recovery.
+History version 1 rows accept the additive trailing `gradient_norm` and
+`clipped_batches` fields. Legacy rows without them remain diagnostic input, and
+newly emitted rows always include them.
 
 `inspect --state` fully validates any present weights/checkpoint under the
 shared lock. It reports cumulative completed and target epochs and, for early

@@ -19,13 +19,17 @@ coordinator owns the exclusive update boundary between batch calls.
 
 ## Deterministic Tasks and Reduction
 
-Each epoch partitions the source-order samples into configured batch ranges,
-and each range contains exactly one logical task per sample. `thread_count`
+Each epoch creates one logical sample-order plan and partitions its positions
+into configured batch ranges. Disabled shuffle uses source order; enabled
+shuffle uses the deterministic absolute-epoch plan specified in
+`training-engine.md`. Each range contains exactly one logical task per sample.
+`thread_count`
 changes only how many workers execute those tasks; it never changes batch or
 task boundaries. Each completed task leaves its sample
 gradient in its worker context. After each bounded execution wave, the main
-thread feeds those gradients to `NeuralBatchAccumulator` by increasing global
-sample index, then reuses the worker buffers. Finalization forms the batch mean
+thread feeds those gradients to `NeuralBatchAccumulator` by increasing logical
+plan position, then reuses the worker buffers. The source indices may be in any
+shuffled order. Finalization forms the batch mean
 only after the declared batch range is complete, using its actual sample count
 before one coordinated model update. `NeuralExecutionPlan` derives
 contiguous, bounded wave ranges from the batch range and effective worker count.
@@ -39,6 +43,10 @@ waves without allocating or copying one gradient per sample.
 Workers must not update weights directly, use atomic floating-point additions,
 or implement asynchronous “Hogwild” training.
 
+Gradient norm calculation and clipping occur only on the coordinator after the
+ordered mean gradient is finalized. Consequently worker scheduling and count
+cannot change the norm, clipping decision, scaling factor, or update order.
+
 ## Execution Configuration
 
 `-j N` or `--threads N` selects a positive worker count for `train` and
@@ -47,6 +55,10 @@ effective worker count is capped by the sample count. This is operational
 configuration: it is absent from `project.conf`, canonical digests,
 `weights.txt`, and `checkpoint.txt`. Resuming with a different thread count
 must produce the same logical work and reduction order.
+
+Shuffle is not execution configuration: its enablement and algorithm identity
+are training provenance. Workers receive already selected source indices and
+never advance a PRNG or derive their own order.
 
 Prediction caps its worker count by the number of input samples. Each worker
 owns a model workspace, shares only the immutable loaded snapshot, and writes

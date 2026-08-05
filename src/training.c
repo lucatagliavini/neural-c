@@ -61,9 +61,11 @@ int neural_model_train_range(
     NeuralError *error)
 {
     NeuralParallelExecutor *executor = NULL;
+    NeuralSampleOrder *sample_order = NULL;
+    NeuralGradient *clipped_gradient = NULL;
     NeuralWorkspace *evaluation_workspace = NULL;
     neural_real *predicted = NULL;
-    NeuralTrainingResult completed = {0U, 0U, 0.0};
+    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0U};
     NeuralBatchPlan batch_plan;
     size_t output_count;
     size_t epoch_index;
@@ -87,6 +89,9 @@ int neural_model_train_range(
                                          execution,
                                          &executor,
                                          error) ||
+        !neural_sample_order_create(dataset->sample_count,
+                                    &sample_order,
+                                    error) ||
         !neural_workspace_create(model, &evaluation_workspace, error)) {
         goto cleanup;
     }
@@ -98,6 +103,10 @@ int neural_model_train_range(
                 : training->batch_size,
             &batch_plan,
             error)) {
+        goto cleanup;
+    }
+    if (training->gradient_clip_norm > 0.0 &&
+        !neural_gradient_create(model, &clipped_gradient, error)) {
         goto cleanup;
     }
     output_count = neural_model_output_count(model);
@@ -131,10 +140,20 @@ int neural_model_train_range(
         NeuralEpochReport report = {0};
         size_t batch_index;
 
+        if (!neural_sample_order_prepare(sample_order,
+                                         training->seed,
+                                         (uint64_t)epoch_index,
+                                         training->shuffle,
+                                         error)) {
+            goto cleanup;
+        }
         for (batch_index = 0U;
              batch_index < batch_plan.batch_count;
              batch_index++) {
             const NeuralGradient *gradient;
+            const NeuralGradient *update_gradient;
+            neural_real gradient_norm;
+            int clipped = 0;
             size_t sample_begin;
             size_t sample_end;
 
@@ -143,13 +162,42 @@ int neural_model_train_range(
                                          &sample_begin,
                                          &sample_end,
                                          error) ||
-                !neural_parallel_executor_batch_gradient(executor,
-                                                         sample_begin,
-                                                         sample_end,
-                                                         &gradient,
-                                                         error) ||
-                !neural_model_apply_gradient(model,
-                                             gradient,
+                !neural_parallel_executor_ordered_batch_gradient(
+                    executor,
+                    sample_order,
+                    sample_begin,
+                    sample_end,
+                    &gradient,
+                    error)) {
+                goto cleanup;
+            }
+            update_gradient = gradient;
+            if (training->gradient_clip_norm > 0.0) {
+                if (!neural_gradient_copy(clipped_gradient,
+                                          gradient,
+                                          error) ||
+                    !neural_gradient_clip_norm(
+                        clipped_gradient,
+                        training->gradient_clip_norm,
+                        &gradient_norm,
+                        &clipped,
+                        error)) {
+                    goto cleanup;
+                }
+                update_gradient = clipped_gradient;
+            } else if (!neural_gradient_norm(gradient,
+                                             &gradient_norm,
+                                             error)) {
+                goto cleanup;
+            }
+            if (gradient_norm > report.max_gradient_norm) {
+                report.max_gradient_norm = gradient_norm;
+            }
+            if (clipped) {
+                report.clipped_batch_count++;
+            }
+            if (!neural_model_apply_gradient(model,
+                                             update_gradient,
                                              training->learning_rate,
                                              error)) {
                 goto cleanup;
@@ -172,6 +220,10 @@ int neural_model_train_range(
             if (observer_status == NEURAL_EPOCH_OBSERVER_STOP) {
                 completed.completed_epochs = report.completed_epochs;
                 completed.final_loss = report.loss;
+                completed.final_max_gradient_norm =
+                    report.max_gradient_norm;
+                completed.clipped_batch_count =
+                    report.clipped_batch_count;
                 epoch_index = report.completed_epochs;
                 break;
             }
@@ -186,6 +238,8 @@ int neural_model_train_range(
         }
         completed.completed_epochs = report.completed_epochs;
         completed.final_loss = report.loss;
+        completed.final_max_gradient_norm = report.max_gradient_norm;
+        completed.clipped_batch_count = report.clipped_batch_count;
         epoch_index = report.completed_epochs;
     }
     *result = completed;
@@ -194,6 +248,8 @@ int neural_model_train_range(
 cleanup:
     free(predicted);
     neural_workspace_free(evaluation_workspace);
+    neural_gradient_free(clipped_gradient);
+    neural_sample_order_free(sample_order);
     neural_parallel_executor_free(executor);
     return success;
 }

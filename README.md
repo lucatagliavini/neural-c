@@ -125,8 +125,16 @@ Fresh training refuses to start if `weights.txt` or `checkpoint.txt` already
 exists. Full-batch and mini-batch updates and epoch loss reporting are
 deterministic across worker counts. Configure training batches during
 initialization with `--batch-size N`; zero selects the full dataset, while a
-positive value creates source-order mini-batches with a possibly smaller final
-batch. Mutating commands hold an exclusive, non-blocking project lock
+positive value creates logical mini-batches with a possibly smaller final
+batch. Add `--shuffle` during initialization to enable deterministic per-epoch
+Fisher-Yates ordering. The order is derived from the configured seed and
+absolute epoch, so worker-count changes and checkpoint resume reproduce the
+same updates exactly. Existing projects without `shuffle`, and new projects
+without `--shuffle`, retain source order. `--gradient-clip-norm V` enables
+deterministic L2 clipping of each finalized mean batch gradient. Training
+reports the maximum pre-clipping gradient norm and number of clipped batches
+for the last epoch; zero, the default, disables clipping and preserves legacy
+updates exactly. Mutating commands hold an exclusive, non-blocking project lock
 in `.neural-c.lock`; `inspect` uses a shared lock and reports an immediate
 project-busy error when training or forced initialization is active.
 

@@ -223,6 +223,10 @@ prepare_project "$native_dir"
 prepare_project "$ppc64le_dir"
 prepare_project "$native_to_ppc64le_dir"
 prepare_project "$ppc64le_to_native_dir"
+printf 'shuffle 1\ngradient_clip_norm 1\n' \
+    >>"$native_to_ppc64le_dir/project.conf"
+printf 'shuffle 1\ngradient_clip_norm 1\n' \
+    >>"$ppc64le_to_native_dir/project.conf"
 
 printf 'Cross-runtime: validating canonical project inspection\n'
 run_native inspect "$native_dir" >"$work_dir/native.inspect"
@@ -333,10 +337,12 @@ compare_prediction_documents \
 printf 'Cross-runtime: comparing independently apportioned splits\n'
 run_native init "$native_split_dir" --inputs 4 --layer 3:softmax \
     --epochs 2 --loss categorical_cross_entropy \
-    --checkpoint-interval 0 --batch-size 5 >/dev/null
+    --checkpoint-interval 0 --batch-size 5 --gradient-clip-norm 0.5 \
+    --shuffle >/dev/null
 run_ppc64le init "$ppc64le_split_dir" --inputs 4 --layer 3:softmax \
     --epochs 2 --loss categorical_cross_entropy \
-    --checkpoint-interval 0 --batch-size 5 >/dev/null
+    --checkpoint-interval 0 --batch-size 5 --gradient-clip-norm 0.5 \
+    --shuffle >/dev/null
 run_native import-csv "$native_split_dir" \
     tests/fixtures/iris-small-split.csv \
     --schema tests/fixtures/iris-schema.txt --validation-ratio 0.2 \

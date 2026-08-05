@@ -33,7 +33,8 @@ rejected before disk mutation.
 
 A checkpoint always represents the boundary after a fully completed epoch.
 This remains sufficient for deterministic mini-batch training because sample
-order and batch boundaries are derived from immutable project configuration.
+order is regenerated from immutable project configuration plus the absolute
+epoch index, and batch boundaries slice that logical order.
 An interruption is observed only at the next completed epoch boundary; a hard
 failure before that boundary persists no partial epoch, so recovery repeats
 from the prior coherent checkpoint. Refinement refuses
@@ -143,6 +144,14 @@ remain ordered as specified in `parallel-execution.md`.
 `batch_size` is deliberately different: it changes update boundaries, belongs
 to `project.conf`, and is covered by the training digest. Changing it makes
 existing weights and checkpoints fail provenance validation before mutation.
+Enabled `shuffle` is also training-owned and digest-bound. It requires no
+checkpoint field: resume of `[completed_epochs, target_epochs)` regenerates its
+first plan for zero-based absolute epoch `completed_epochs`. Disabled or absent
+shuffle preserves legacy source order and its canonical digest.
+Positive `gradient_clip_norm` is likewise training-owned and digest-bound, so
+changing it rejects existing persistence before mutation. Resume needs no new
+field: every regenerated batch gradient is measured and clipped independently,
+and no norm or clipping counter affects the next epoch's state.
 
 ## Checkpoint Lifecycle
 

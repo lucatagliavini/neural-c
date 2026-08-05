@@ -46,6 +46,14 @@ int neural_gradient_reduce_ordered(
 int neural_gradient_scale(NeuralGradient *gradient,
                           neural_real factor,
                           NeuralError *error);
+int neural_gradient_norm(const NeuralGradient *gradient,
+                         neural_real *norm,
+                         NeuralError *error);
+int neural_gradient_clip_norm(NeuralGradient *gradient,
+                              neural_real maximum_norm,
+                              neural_real *original_norm,
+                              int *clipped,
+                              NeuralError *error);
 int neural_model_apply_gradient(NeuralModel *model,
                                 const NeuralGradient *gradient,
                                 neural_real learning_rate,

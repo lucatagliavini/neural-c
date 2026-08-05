@@ -232,6 +232,14 @@ static void digest_training(const NeuralTrainingConfig *training,
         update_text(&context, "mini_batch");
         update_size(&context, training->batch_size);
     }
+    if (training->shuffle != 0) {
+        update_text(&context, "epoch_shuffle");
+        update_text(&context, "splitmix64_fisher_yates_v1");
+    }
+    if (training->gradient_clip_norm > 0.0) {
+        update_text(&context, "gradient_clip_norm");
+        update_real(&context, training->gradient_clip_norm);
+    }
     if (training->early_stopping_patience != 0U) {
         char validation_digest[NEURAL_SHA256_TEXT_CAPACITY];
 

@@ -252,7 +252,7 @@ static int train_early_stopping_range(
 {
     NeuralEarlyStoppingObserver observer;
     NeuralWeightsMetadata weights = {0};
-    NeuralTrainingResult completed = {0U, 0U, 0.0};
+    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0U};
     int initialized = 0;
     int success = 0;
 
@@ -459,7 +459,7 @@ int neural_project_train_fresh_controlled(
         &checkpoint_observer, observer, observer_context
     };
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
-    NeuralTrainingResult completed = {0U, 0U, 0.0};
+    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0U};
     char *weights_path = NULL;
     char *checkpoint_path = NULL;
     int project_loaded = 0;
@@ -614,7 +614,7 @@ int neural_project_train_resume_controlled(
         &checkpoint_observer, observer, observer_context
     };
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
-    NeuralTrainingResult completed = {0U, 0U, 0.0};
+    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0U};
     NeuralModel *checkpoint_model = NULL;
     NeuralModel *best_model = NULL;
     NeuralModel *weights_model = NULL;
@@ -908,7 +908,7 @@ int neural_project_train_additional_controlled(
         &checkpoint_observer, observer, observer_context
     };
     NeuralProjectLock project_lock = NEURAL_PROJECT_LOCK_INITIALIZER;
-    NeuralTrainingResult completed = {0U, 0U, 0.0};
+    NeuralTrainingResult completed = {0U, 0U, 0.0, 0.0, 0U};
     NeuralModel *model = NULL;
     NeuralModel *best_model = NULL;
     char *weights_path = NULL;
