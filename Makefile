@@ -3,6 +3,7 @@ PPC64LE_CC ?= powerpc64le-linux-gnu-gcc
 PPC64LE_QEMU ?= qemu-ppc64le
 PPC64LE_SYSROOT ?= /usr/powerpc64le-linux-gnu
 PPC64LE_RUNNER ?= $(PPC64LE_QEMU) -L $(PPC64LE_SYSROOT)
+PPC64LE_STATIC_LDFLAGS ?= -static
 THREAD_FLAGS ?= -pthread
 UNAME_MACHINE := $(shell uname -m)
 UNAME_RELEASE := $(shell uname -r)
@@ -42,9 +43,10 @@ TEST_NAMES += training_engine checkpoint_observer project_lock training_resume
 TEST_NAMES += prediction evaluation input_document data_import
 PPC64LE_TEST_BINARIES := $(addprefix build/ppc64le/tests/test_,$(TEST_NAMES))
 
-.PHONY: all build build-native build-ppc64le test test-defaults
+.PHONY: all build build-native build-ppc64le build-ppc64le-static
+.PHONY: test test-defaults
 .PHONY: test-sanitize test-thread-sanitize check verify-binaries clean
-.PHONY: test-ppc64le test-ppc64le-cli test-cross-runtime
+.PHONY: test-ppc64le test-ppc64le-static test-ppc64le-cli test-cross-runtime
 .PHONY: check-cross-runtime
 
 all: build-native
@@ -55,6 +57,8 @@ build-native: build/x86_64/neural-c
 
 build-ppc64le: build/ppc64le/neural-c
 
+build-ppc64le-static: build/ppc64le-static/neural-c
+
 build/x86_64/neural-c: $(PROGRAM_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
 	mkdir -p $(@D)
 	$(NATIVE_CC) $(CPPFLAGS) $(CFLAGS) $(PROGRAM_SOURCES) -o $@ $(LDLIBS)
@@ -62,6 +66,11 @@ build/x86_64/neural-c: $(PROGRAM_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
 build/ppc64le/neural-c: $(PROGRAM_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
 	mkdir -p $(@D)
 	$(PPC64LE_CC) $(CPPFLAGS) $(CFLAGS) $(PROGRAM_SOURCES) -o $@ $(LDLIBS)
+
+build/ppc64le-static/neural-c: $(PROGRAM_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
+	mkdir -p $(@D)
+	$(PPC64LE_CC) $(CPPFLAGS) $(CFLAGS) $(PPC64LE_STATIC_LDFLAGS) \
+		$(PROGRAM_SOURCES) -o $@ $(LDLIBS)
 
 build/tests/test_core: $(CORE_TEST_SOURCES) $(PUBLIC_HEADERS) $(INTERNAL_HEADERS)
 	mkdir -p $(@D)
@@ -154,6 +163,11 @@ test-ppc64le: $(PPC64LE_TEST_BINARIES)
 		printf 'Running %s\n' "$$test_binary"; \
 		$(PPC64LE_RUNNER) "$$test_binary" || exit $$?; \
 	done
+
+test-ppc64le-static: build/ppc64le-static/neural-c
+	file $< | grep -q 'statically linked'
+	! readelf -d $< | grep -q '(NEEDED)'
+	$(PPC64LE_QEMU) $< --version
 
 test-ppc64le-cli: build/ppc64le/neural-c
 	bash -n tests/run_ppc64le.sh
