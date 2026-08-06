@@ -77,14 +77,22 @@ by prediction.
 ```sh
 make build-native
 make build-ppc64le
+make build-ppc64le-static
 make test
 make test-thread-sanitize
 make test-ppc64le
+make test-ppc64le-static
 make test-ppc64le-cli
 make test-cross-runtime
 make check-cross-runtime
 make verify-binaries
 ```
+
+`make build-ppc64le-static` produces the self-contained
+`build/ppc64le-static/neural-c` executable. Unlike the regular ppc64le build,
+it does not require a compatible glibc or a ppc64le sysroot on the target
+host. `make test-ppc64le-static` verifies the ELF linkage and executes
+`--version` through QEMU without a sysroot.
 
 On an x86-64 host with `qemu-user`, the ppc64le cross-toolchain, and its
 sysroot installed, `make check-cross-runtime` cross-builds the complete C test
